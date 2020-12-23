@@ -2,29 +2,89 @@
 #include <Wire.h>
 SFE_BMP180 pressure;
 
-double pressureThreshold = 0.01;
-double pressure_mean, pressure_stddev_mean;
+float pressure_mean=1005, pressure_stddev_mean=0;
 
-unsigned long windSensorTime = 0;
+//unsigned int lastGustTimeInSeconds = 0;
+//byte gustCounter = 0;
+bool initSuccessful = false;
 
 bool initWindSensor()
 {
   // Initialize pressure sensor
-  if (pressure.begin())
+  if (initSuccessful = pressure.begin())
     Serial.println(F("BMP180 init success"));
   else
   {
     Serial.println(F("BMP180 init fail (disconnected?)\n\n"));
-    return false;
-    //while(1); // Pause forever.
   }
-  return true;
+  return initSuccessful;
+}
+
+bool getWindSpeedOK(bool verbose, float* std)
+{
+  if (!initSuccessful)
+    return false;
+  float std_tmp;
+  if (std==NULL)
+    std = &std_tmp;
+  char status = pressure.startPressure(3);
+  *std = 0;
+  if (status != 0)
+  {
+    waitMS(status);
+    double T = 15, P;
+    status = pressure.getPressure(P,T);
+    if (status == 0)
+    {
+      if (verboseLevel) Serial.println(F("error retrieving pressure measurement"));
+      return false;
+    }
+
+    pressure_stddev_mean = 0.1*pow(P-pressure_mean,2) + 0.9*pressure_stddev_mean;
+    pressure_mean = 0.01*P + 0.99*pressure_mean;
+    *std = sqrt(pressure_stddev_mean);
+    if (verbose) Serial.print(F(" P="));
+    if (verbose) Serial.print(P);
+    if (verbose) Serial.print(F(" mean="));
+    if (verbose) Serial.print(pressure_mean);
+    if (verbose) Serial.print(F(" std="));
+    if (verbose) Serial.print(*std);
+    if (verbose) Serial.print(F(" thres="));
+    if (verbose) Serial.print(pressureThreshold);
+    if (verbose) Serial.print(F(" gusts="));
+    if (verbose) Serial.println(gustCounter);
+  }
+  else if (verboseLevel)
+    Serial.println(F("error starting pressure measurement"));
+
+  unsigned int nowInSeconds = millis() / (1000*TT);
+  if (*std > pressureThreshold)
+  {
+    if (nowInSeconds > (lastGustTimeInSeconds + gust_spacing_min))
+    {
+      if (nowInSeconds < (lastGustTimeInSeconds + gust_spacing_max))
+      {
+        gustCounter++;
+        if (gustCounter >= required_number_of_gusts)
+        {
+          gustCounter = 0;
+          return true;
+        }
+      }
+      else
+        gustCounter=1;
+
+      lastGustTimeInSeconds = nowInSeconds;
+    }
+  }
+  else if (nowInSeconds > (lastGustTimeInSeconds + gust_spacing_max))
+    gustCounter = 0;
+
+  return false;
 }
 
 void getPressure(double& P, double& T)
 {
-  return;
-  
   char status;
   double p0,a;
 
@@ -39,7 +99,7 @@ void getPressure(double& P, double& T)
   {
     // Wait for the measurement to complete:
 
-    delay(status);
+    waitMS(status);
 
     // Retrieve the completed temperature measurement:
     // Note that the measurement is stored in the variable T.
@@ -47,6 +107,8 @@ void getPressure(double& P, double& T)
     // Function returns 1 if successful, 0 if failure.
 
     status = pressure.getTemperature(T);
+    //Serial.print("temp = ");
+    //Serial.println(T);
     if (status != 0)
     {
       // Start a pressure measurement:
@@ -58,7 +120,7 @@ void getPressure(double& P, double& T)
       if (status != 0)
       {
         // Wait for the measurement to complete:
-        delay(status);
+        waitMS(status);
 
         // Retrieve the completed pressure measurement:
         // Note that the measurement is stored in the variable P.
@@ -72,57 +134,24 @@ void getPressure(double& P, double& T)
         {
           return;
         }
-        else Serial.println(F("error retrieving pressure measurement\n"));
+        else if (verboseLevel) Serial.println(F("error retrieving pressure measurement\n"));
       }
-      else Serial.println(F("error starting pressure measurement\n"));
+      else if (verboseLevel) Serial.println(F("error starting pressure measurement\n"));
     }
-    else Serial.println(F("error retrieving temperature measurement\n"));
+    else if (verboseLevel) Serial.println(F("error retrieving temperature measurement\n"));
   }
-  else Serial.println(F("error starting temperature measurement\n"));
+  else if (verboseLevel) Serial.println(F("error starting temperature measurement\n"));
 }
 
 void windSpeedClear()
 {
-  windSensorTime = millis();
   pressure_stddev_mean = 0.0;
-  double T;
-  getPressure(pressure_mean, T);
-}
-
-bool getWindSpeedOK()
-{
-  double pressure, temp;
-  getPressure(pressure, temp);
-  pressure_mean += 0.01 * (pressure - pressure_mean);
-  float pressure_stddev = fabs(pressure - pressure_mean);
-  pressure_stddev_mean = 0.1 * (pressure_stddev - pressure_stddev_mean);
-  if (fabs(pressure_stddev_mean) > 0.005)
-  {
-    Serial.print(F("std dev: "));
-    Serial.print(pressure_stddev, 4);
-    Serial.print(F(", mean: "));
-    Serial.print(pressure_stddev_mean, 4);
-    Serial.print(F(", pressure: "));
-    Serial.println(pressure, 4);
-    Serial.print(F(", temp: "));
-    Serial.println(temp, 4);
-  }
-
-  if (pressure_stddev_mean > pressureThreshold)
-  {
-    unsigned long now = millis();
-    if ((now - windSensorTime) < 5000)
-      return true;
-    windSensorTime = now;
-  }
-  
-  return false;
 }
 
 void windSensorFeedback(bool success)
 {
   if (success)
-    pressureThreshold -= 0.002;
+    pressureThreshold -= 0.01;
   else
-    pressureThreshold += 0.002;
+    pressureThreshold += 0.01;
 }

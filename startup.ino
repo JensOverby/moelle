@@ -1,39 +1,13 @@
-#define A_SD 11
-#define B_SD 5
-#define C_SD 3
-#define A_IN 12
-#define B_IN 8
-#define C_IN 4
-
-//#define DEBUG_PIN 13
-
-//unsigned int i;
 int lastCount;
-
-void setup_startup()
-{
-  pinMode(A_IN, OUTPUT);
-  pinMode(B_IN, OUTPUT);
-  pinMode(C_IN, OUTPUT);
-
-  pinMode(A_SD, OUTPUT);
-  pinMode(B_SD, OUTPUT);
-  pinMode(C_SD, OUTPUT);
-
-  motor_speed = PWM_START_DUTY;
-}
+byte zc_event_val;
 
 // Analog comparator ISR
-ISR (ANALOG_COMP_vect)
+/*ISR (ANALOG_COMP_vect)
 {
   if (toggle)
     return;
   toggle = true;
-
-  bldc_move();
-  bldc_step++;
-  bldc_step %= 6;
-}
+}*/
 
 void bldc_move()        // BLDC motor commutation function
 {
@@ -68,13 +42,17 @@ void bldc_move()        // BLDC motor commutation function
 void BEMF_A_RISING()
 {
   ADCSRB = (0 << ACME);    // Select AIN1 as comparator negative input
-  ACSR |= 0x03;            // Set interrupt on rising edge
+  //ACSR |= 0x03;            // Set interrupt on rising edge
+  ACSR = 0x00;
+  zc_event_val = 0x20;
 }
 
 void BEMF_A_FALLING()
 {
   ADCSRB = (0 << ACME);    // Select AIN1 as comparator negative input
-  ACSR &= ~0x01;           // Set interrupt on falling edge
+  //ACSR &= ~0x01;           // Set interrupt on falling edge
+  ACSR = 0x00;
+  zc_event_val = 0x0;
 }
 
 void BEMF_B_RISING()
@@ -82,7 +60,9 @@ void BEMF_B_RISING()
   ADCSRA = (0 << ADEN);   // Disable the ADC module
   ADCSRB = (1 << ACME);
   ADMUX = 2;              // Select analog channel 2 as comparator negative input
-  ACSR |= 0x03;
+  //ACSR |= 0x03;
+  ACSR = 0x00;
+  zc_event_val = 0x20;
 }
 
 void BEMF_B_FALLING()
@@ -90,7 +70,9 @@ void BEMF_B_FALLING()
   ADCSRA = (0 << ADEN);   // Disable the ADC module
   ADCSRB = (1 << ACME);
   ADMUX = 2;              // Select analog channel 2 as comparator negative input
-  ACSR &= ~0x01;
+  //ACSR &= ~0x01;
+  ACSR = 0x00;
+  zc_event_val = 0x0;
 }
 
 void BEMF_C_RISING()
@@ -98,7 +80,9 @@ void BEMF_C_RISING()
   ADCSRA = (0 << ADEN);   // Disable the ADC module
   ADCSRB = (1 << ACME);
   ADMUX = 3;              // Select analog channel 3 as comparator negative input
-  ACSR |= 0x03;
+  //ACSR |= 0x03;
+  ACSR = 0x00;
+  zc_event_val = 0x20;
 }
 
 void BEMF_C_FALLING()
@@ -106,7 +90,9 @@ void BEMF_C_FALLING()
   ADCSRA = (0 << ADEN);   // Disable the ADC module
   ADCSRB = (1 << ACME);
   ADMUX = 3;              // Select analog channel 3 as comparator negative input
-  ACSR &= ~0x01;
+  //ACSR &= ~0x01;
+  ACSR = 0x00;
+  zc_event_val = 0x0;
 }
 
 void AH_BL()
@@ -183,9 +169,6 @@ void CH_BL()
 
 void freeWheel()
 {
-  ADCSRA = 135;
-  ADCSRB = 0;
-
   digitalWrite(A_SD, LOW);
   digitalWrite(A_IN, LOW);
 
@@ -196,11 +179,11 @@ void freeWheel()
   digitalWrite(C_IN, LOW);
 }
 
-void makeAcknowledge(int directio=1, int commutations=12)
+void makeAcknowledge(int directio, int commutations)
 {
   waitMS(300);
   
-  for (int j = directio==1? 1 : commutations; j>0 && j<=commutations; j += directio)
+  for (int j = directio==1? 0 : commutations-1; j>-1 && j<commutations; j += directio)
   {
     bldc_step = j % 6;
     for (motor_speed=10; motor_speed<40; motor_speed++)
@@ -230,41 +213,36 @@ bool isRunning(unsigned long& refTime)
   {
     if (count != lastCount)
     {
-      Serial.print(F("countdown = "));
-      Serial.println(25 - count);
+      if (verboseLevel) Serial.print(F("countdown = "));
+      if (verboseLevel) Serial.println(25 - count);
       lastCount = count;
     }
   }
   return true;
 }
 
-float interpolate(float x0, float y0, float x1, float y1, float x) { return y0 + (x-x0)/(x1-x0) * (y1-y0); }
-float getInterpolatedY(float x, float* pData, int* data_ptr)
+unsigned long zeroCrossSearch(unsigned long t, int hyst, bool zero_cross_terminate)
 {
-  if (x > pgm_read_float(pData))
-    return pgm_read_float(pData+1);
-  int data_sz = sizeof(pData)/4;
-  if (x <= pgm_read_float(pData+data_sz-2))
-    return pgm_read_float(pData+data_sz-1);
-  while (pgm_read_float(pData+(*data_ptr)*2+2) > x)
-    (*data_ptr)++;
-  while (pgm_read_float(pData+(*data_ptr)*2) <= x)
-    (*data_ptr)--;
-  float y = interpolate(pgm_read_float(pData+(*data_ptr)*2),pgm_read_float(pData+(*data_ptr)*2+1),pgm_read_float(pData+(*data_ptr)*2+2),pgm_read_float(pData+(*data_ptr)*2+3),x);
-  return y;
-}
+  unsigned long i, zc=0;
+  int c = -hyst;
+  for (i=0; i<t; ++i)
+  {
+    if ((ACSR & 0x20) == zc_event_val)
+      ++c;
+    else
+    {
+      if (c > -hyst)
+        --c;
+    }
+    if (c > 0 && zc == 0)
+    {
+      zc = i;
+      if (zero_cross_terminate)
+        break;
+    }
+  }
 
-float getInterpolatedY_(float x, float* pData, int* data_ptr)
-{
-  if (x > *pData)
-    return *(pData+1);
-  int data_sz = sizeof(pData)/4;
-  if (x <= *(pData+data_sz-2))
-    return *(pData+data_sz-1);
-  while (*(pData+(*data_ptr)*2+2) > x)
-    (*data_ptr)++;
-  while (*(pData+(*data_ptr)*2) <= x)
-    (*data_ptr)--;
-  float y = interpolate(*(pData+(*data_ptr)*2),*(pData+(*data_ptr)*2+1),*(pData+(*data_ptr)*2+2),*(pData+(*data_ptr)*2+3),x);
-  return y;
+  if (zc == 0)
+    return i;
+  return zc;
 }
