@@ -1,30 +1,6 @@
+#include "header.h"
+
 //#define DEBUG
-
-#define NO_SPINUP_ERRORS
-
-#define PWM_START_DUTY   50
-#define PWM_STEADY_DUTY   100
-#define COMMUTATION_CYCLES_PER_SEC 40
-#define TT 32
-#define PHASE_THRESHOLD 50
-
-#define highPin 9
-#define dumploadPin 13
-#define enableDriverPin 10
-#define efficiency 0.9
-#define pwmMin 30
-#define pwmMax 242
-#define VoutMax 16.4
-#define VinMax 53
-#define VoutMin 10
-#define IoutMax 20
-
-#define myConstrain(x, a, b)\
-  if (x<a) x=a; else if (x>b) x=b;
-
-#define whileMs(x)\
-  unsigned long xxxTime = millis() + x*TT;\
-  while (millis() < xxxTime)
 
 bool simRun = false;
 
@@ -34,7 +10,7 @@ unsigned long spinupTime, runningTime=0;
 unsigned int timeStampInSeconds = 0;
 
 byte bldc_step = 0, motor_speed;
-volatile bool toggle = false;
+int com_error = 0;
 
 float vcc = 5.;
 bool shutDownFlag = false;
@@ -44,101 +20,81 @@ float Vout_filter_dbg=0;
 #endif
 float Iin_raw, Vin_raw, Vout_raw;
 unsigned int min_sync_pwm = 255;
-int verboseLevel = 2;
+int verboseLevel = 2, verboseLevel_old=verboseLevel;
 
 float duty_cycle = pwmMax;
 float proportionalError=0;
-float sync_pwm_positive_offset = 0;
+//float sync_pwm_positive_offset = 0;
 
-int rule_error = 0;
+float pressureThreshold = 0.1;
+byte gust_spacing_min = 2;
+byte gust_spacing_max = 6;
+byte required_number_of_gusts = 3;
+unsigned int minRunTimeInSeconds = 30;
 
+bool acknowledge = false;
 bool spinupNow = false;
 bool enableWindSensor = true;
 
 int data_ptr = 0;
-/*PROGMEM*/ const float data[] = {0.04,60, 0.02,75, 0.01,115, 0.007,135, 0.005,170, 0.004,205};
-
 float powercurve[26];
 
-/*const float powercurve[] = {26, 17.29,
-                                   25, 17.21,
-                                   24, 16.48,
-                                   23, 14.77,
-                                   22, 12.02,
-                                   21, 8.75,
-                                   20, 5.77,
-                                   19, 3.6,
-                                   18, 2.25,
-                                   17, 1.5,
-                                   16, 1.11,
-                                   15, 0.92,
-                                   14, 0.85};*/
-
-void waitMS(float stopT)
-{
-  stopT = millis() + stopT*TT;
-  while (millis() < stopT);
-}
-
-void waitUnits(unsigned long stopT)
-{
-  stopT = millis() + stopT;
-  while (millis() < stopT);
-}
+float bemfPhaseA = 0;
+unsigned long commutations = 0;
 
 void setup()
 {
-  setup_startup();
+  pinMode(A_IN, OUTPUT);
+  pinMode(B_IN, OUTPUT);
+  pinMode(C_IN, OUTPUT);
 
-  pinMode(highPin, OUTPUT);
+  pinMode(A_SD, OUTPUT);
+  pinMode(B_SD, OUTPUT);
+  pinMode(C_SD, OUTPUT);
+
   pinMode(dumploadPin, OUTPUT);
+  digitalWrite(dumploadPin, false);
+  pinMode(highPin, OUTPUT);
+  analogWrite(highPin, 0);
   pinMode(enableDriverPin, OUTPUT);
+  digitalWrite(enableDriverPin, false);
 
   // For Phase-correct PWM of 31.250 kHz (prescale factor of 1)
   TCCR0A = _BV(COM0A1) | _BV(COM0B1) | _BV(WGM00);
   TCCR0B = _BV(CS00);
 
   // Timer1 module setting: set clock source to clkI/O / 1 (no prescaling)
-  //TCCR1A = 0;
   TCCR1A =  0x21 | 0x81;
   TCCR1B = 0x01;
   
   // Timer2 module setting: set clock source to clkI/O / 1 (no prescaling)
-  //TCCR2A = 0;
   TCCR2A =  0x81;
   TCCR2B = 0x01;
-  // Analog comparator setting
-  ACSR   = 0x10;           // Disable and clear (flag bit) analog comparator interrupt
 
-  digitalWrite(enableDriverPin, false);
-  analogWrite(highPin, 0);
-  digitalWrite(dumploadPin, false);
+  // Analog comparator setting
+  //ACSR   = 0x10;           // Disable and clear (flag bit) analog comparator interrupt
 
   freeWheel();
 
   // initialize serial communications at 9600 bps:
   Serial.begin(9600);
 
-  Serial.println(F("Initializing wind sensor"));
-  enableWindSensor = initWindSensor();
-
-  //TCCR2B = TCCR2B & B11111000 | B00000001;    // set timer 2 divisor to     1 for PWM frequency of 31372.55 Hz
+  if (verboseLevel) Serial.println(F("Initializing wind sensor"));
+  enableWindSensor = initWindSensor2();
 
   waitMS(1000);
 
   vcc = readVcc();
-  Serial.print(F("vcc = "));
-  Serial.println(vcc);
-
-  //AdcIntSetup();
+  if (verboseLevel) Serial.print(F("vcc = "));
+  if (verboseLevel) Serial.println(vcc);
 
   unsigned long stopTime = millis() + 1000*TT;
   while (millis() < stopTime)
     sample();
-  Serial.print(F("min_sync_pwm = "));
-  Serial.println(min_sync_pwm);
+  if (verboseLevel) Serial.print(F("min_sync_pwm = "));
+  if (verboseLevel) Serial.println(min_sync_pwm);
 
-  Serial.println(F("Power Curve:"));
+  if (verboseLevel) Serial.println(F("Power Curve:"));
   eepromReadFloat16(powercurve, sizeof(powercurve)/4);
 }
 
@@ -150,7 +106,6 @@ void enableBuck()
   duty_cycle = min_sync_pwm + 5;
   synchronousBuck = true;
   buckEnabled = true;
-  //sync_pwm_positive_offset = 2.5;
 }
 
 void disableBuck()
@@ -165,15 +120,15 @@ void setBuckPWM(float& pwm)
   if (!buckEnabled)
     return;
 
-  myConstrain(pwm, /*pwmMin*/min_sync_pwm, pwmMax)
+//  myConstrain(pwm, /*pwmMin*/min_sync_pwm, pwmMax)
 
-  /*if (synchronousBuck)
+  if (synchronousBuck)
   {
-    if (Iin_filter > 0.5)
+    if (pwm < 150)
     {
       synchronousBuck = false;
       digitalWrite(enableDriverPin, false);
-      Serial.println("Asynchronous");
+      if (verboseLevel) Serial.println("Asynchronous");
     }
     else
     {
@@ -187,23 +142,23 @@ void setBuckPWM(float& pwm)
   }
   else
   {
-    if (Iin_filter < 0.15)
+    if (pwm > 160)
     {
-      Serial.println("Synchronous");
+      if (verboseLevel) Serial.println("Synchronous");
       synchronousBuck = true;
       digitalWrite(enableDriverPin, false);
       myConstrain(pwm, min_sync_pwm, pwmMax)
     }
-    else if (Iin_filter < 0.3)
-    {
-      myConstrain(pwm, min_sync_pwm, pwmMax)
-    }
+    //else if (Iin_filter < 0.3)
+    //{
+    //  myConstrain(pwm, min_sync_pwm, pwmMax)
+    //}
     //if (pwm >= min_sync_pwm+5)
     //{
     //  synchronousBuck = true;
     //  digitalWrite(enableDriverPin, false);
     //}
-  }*/
+  }
 
   if (synchronousBuck)
   {
@@ -217,21 +172,20 @@ void setBuckPWM(float& pwm)
   }
 }
 
-
 void loop()
 {
-  /*digitalWrite(A_SD, HIGH);
-  digitalWrite(A_IN, LOW);
+  /*analogWrite(A_SD, 40);
+  digitalWrite(A_IN, HIGH);
 
-  analogWrite(B_SD, motor_speed);
-  digitalWrite(B_IN, HIGH);
+  digitalWrite(B_SD, LOW);
+  digitalWrite(B_IN, LOW);
 
-  digitalWrite(C_SD, LOW);
+  digitalWrite(C_SD, HIGH);
   digitalWrite(C_IN, LOW);
 
   while (true)
     waitMS(1000);*/
-  
+
   if (getCommand())
     execCommand();
 
@@ -242,302 +196,215 @@ void loop()
       {
         //state = RUNNING_NO_CHARGE;
         //break;
-        
+
         unsigned int valuePhaseB = analogRead(A2);
-        Serial.print(F("INIT: measured speed value = "));
-        Serial.println(valuePhaseB);
-        if (spinupNow || valuePhaseB > PHASE_THRESHOLD)
+        bool verbose = (now - runningTime > 1000*TT);
+        if (verbose)
         {
           runningTime = now;
-          while (isRunning(runningTime))
+          if (verboseLevel) Serial.print(F("INIT: measured speed value = "));
+          if (verboseLevel) Serial.println(valuePhaseB);
+        }
+        //spinupNow = true;
+        if (spinupNow || acknowledge || valuePhaseB > PHASE_THRESHOLD)
+        {
+          acknowledge = false;
+          runningTime = now;
+          while (isRunning(runningTime) && !spinupNow)
             waitMS(50);
 
           makeAcknowledge(1);
 
           if (enableWindSensor)
-            windSpeedClear();
+            windSpeedClear2();
   
           runningTime = millis();
           state = WAITING_FOR_CANCEL;
-          Serial.println(F("WAITING"));
+          if (verboseLevel) Serial.println(F("WAITING"));
         }
-        waitMS(500);
+
+        getWindSpeedOK2();
+        //waitMS(500);
       }
       break;
     case WAITING_FOR_CANCEL:
       {
-        unsigned int waitTimeInSeconds = (now - runningTime)/(1000*TT);
-        if (waitTimeInSeconds > 15)
-        {
-          state = WAITING;
-          runningTime = now;
-        }
-
         unsigned int valuePhaseB = analogRead(A2);
-        if (valuePhaseB > PHASE_THRESHOLD)
+        if (acknowledge || valuePhaseB > PHASE_THRESHOLD)
         {
+          acknowledge = false;
           runningTime = millis();
           while (isRunning(runningTime))
-            waitMS(50);
+            waitMS(20);
 
           makeAcknowledge(-1);
           state = INIT;
+          waitMS(1000);
+          break;
+        }
+        
+        unsigned int waitTimeInSeconds = (now - runningTime)/(1000*TT);
+        if (waitTimeInSeconds > 15 || spinupNow)
+        {
+          state = WAITING;
+          runningTime = 0;
         }
 
-        waitMS(20);
+        getWindSpeedOK2();
+        //waitMS(20);
       }
       break;
     case WAITING:
       {
-        if (spinupNow || !enableWindSensor || getWindSpeedOK())
-        {
-          spinupNow = false;
-          state = SPINUP;
-          Serial.println(F("SPINUP"));
-        }
-
         unsigned int valuePhaseB = analogRead(A2);
-        if (valuePhaseB > PHASE_THRESHOLD)
+        if (acknowledge || valuePhaseB > PHASE_THRESHOLD)
         {
+          acknowledge = false;
           runningTime = millis();
           while (isRunning(runningTime))
-            waitMS(50);
+            waitMS(20);
 
           makeAcknowledge(-1);
           state = INIT;
+          waitMS(1000);
+          break;
         }
 
-        waitMS(20);
+        bool verbose = (now - runningTime > 1000*TT);
+        if (verbose)
+          runningTime = now;
+
+        if (spinupNow || !enableWindSensor || getWindSpeedOK2(verbose && verboseLevel))
+        {
+          spinupNow = false;
+          state = SPINUP;
+          if (verboseLevel) Serial.println(F("SPINUP"));
+        }
+
+        //waitMS(20);
       }
       break;
     case SPINUP:
       {
-        waitMS(300);
-        makeAcknowledge(1);
+        //byte debArray[600];
+        int counter = 0;
+        com_error = 0;
+
+        for (bldc_step=0; bldc_step<6; ++bldc_step)
+        {
+          for (motor_speed=10; motor_speed<40; motor_speed++)
+          {
+            bldc_move();
+            waitMS(10);
+          }
+        }
+        bldc_step = 0;
 
         spinupTime = millis();
 
-        const float commutation_angle = 3.14159/3;
-        float dT = 0.04;
-        data_ptr = 0;
+        unsigned long t = 40000;
+        byte com_state = 0;
+        motor_speed = 50;
+        float duty = motor_speed;
+        float fac = 1;
+        unsigned int tmp_counter = 0;
+        byte pct;
+
+        unsigned long T = 0;
 
         while (true)
         {
-          float angular_speed = commutation_angle / dT;
-          angular_speed += 20.0*dT;//50.0 * dT;
-          dT = commutation_angle / angular_speed;
-  
-          motor_speed = getInterpolatedY(dT, data, &data_ptr);
-
           bldc_move();
           bldc_step++;
           bldc_step %= 6;
 
-          waitMS(dT*1000.);
-
-          if (dT <= 0.01)
-            break;
-        }        
-
-        int8_t debArray[120];
-        unsigned int old_dt = 127;
-        unsigned int old_comTime = 255;
-        
-        byte errorCode = 0;
-        unsigned int rule1_counter=0, rule2_counter=-1;
-
-        unsigned int globalMaxComTime = dT*1000*TT;
-        unsigned int comTime = globalMaxComTime;
-        unsigned long t_old = millis();
-
-        motor_speed = PWM_STEADY_DUTY;
-        unsigned int turnCounter=0, turnCounterOld = 0;
-        unsigned long nextCheckTime = millis() + 1000*TT;
-        bool cancelled = false;
-        toggle = true;
-        bldc_step += 1;
-        bldc_step %= 6;
-        byte count_ = 0;
-        count_ = 0;
-        ACSR |= 0x08;                    // Enable analog comparator interrupt
-        waitUnits(comTime/4); //delayMicroseconds(comTime/4);
-        toggle = false;
-        while(true)
-        {
-          unsigned int maxComTime = comTime + comTime/2 + 1;
-          if (maxComTime > globalMaxComTime)
-            maxComTime = globalMaxComTime;
-          unsigned long t;
-          unsigned int dt;
-          bool forced = false;
-
-          while (true)
+          if (com_state < 2)
           {
-            t = millis();
-            dt = t - t_old;
-
-            noInterrupts();
-            if (dt > maxComTime)
-            {
-              if (!toggle)
-              {
-                toggle = true;
-                bldc_move();
-                bldc_step++;
-                bldc_step %= 6;
-                forced = true;
-              }
-            }
-            interrupts();
-            
-            if (toggle)
-              break;
-          }
-          if (motor_speed < 200)
-            motor_speed += 2;
-
-          // BEGIN, rule based error
-          rule_error = 0;
-          if (!forced)
-          {
-            comTime = 0.1*float(dt) + 0.9*float(comTime);
-
-            if (dt < 5*TT && rule1_counter < 40)
-            {
-              if (rule2_counter != -1)
-                rule_error = 1; // More than one "Lows" detected
-              else
-                rule2_counter = 0; // Counter for number of forcings after "Low" detection
-            }
+            unsigned long zc = zeroCrossSearch(t, t/10);
+            pct = (float(zc)/t) * 100;
+            int error = pct - 90;
+            t = t + fac*(t/6500.) * error;
           }
           else
           {
-            if (rule2_counter != -1)
-            {
-              rule2_counter++;
-              if (rule2_counter > 7)
-                rule_error = 2; // More than 7 forcings detected;
-            }
-            if (rule1_counter == 6 || rule1_counter == 7)
-              rule_error = 3; // commutation 7 or 8 must not be forced
+            t = zeroCrossSearch(1.2*t, t/40, true);
           }
 
-          if (rule1_counter > 5 && rule2_counter == -1)
-            rule_error = 4; // "Low" not detected in first 6 commutations
-          rule1_counter++;
-#ifndef NO_SPINUP_ERRORS
-          if (rule_error)
+          T += t;
+          int tmp = t / 10;
+          if (tmp < 100 || tmp>6000)
+          {
+            freeWheel();
+            Serial.println(F("Commutation Error!"));
+            com_error = 1;
             break;
-#endif
-          // END, rule based error
-
-          if (count_ < sizeof(debArray))
-          {
-            int diff = dt - old_dt;
-            myConstrain(diff, -127, 127)
-            old_dt += diff;
-            debArray[count_] = diff;
-
-            diff = comTime - old_comTime;
-            myConstrain(diff, -127, 127)
-            old_comTime += diff;
-            debArray[count_+1] = diff;
-            
-            count_ += 2;
           }
 
-          t_old = t;
 
-          // Prevent BEMF debounce
-          waitUnits(comTime/3); //delayMicroseconds(comTime/4);
-          toggle = false;
-          turnCounter++;
-
-          runningTime = millis();
-          if (runningTime > nextCheckTime)
+          switch (com_state)
           {
-            if (turnCounter > COMMUTATION_CYCLES_PER_SEC*6)
-              break;
-            if (turnCounter <= turnCounterOld)
-            {
-              cancelled = true;
-              break;
-            }
-            turnCounterOld = turnCounter;
-            turnCounter = 0;
-            nextCheckTime += 1000*TT;
-          }
-        }
-
-        ACSR   = 0x10;           // Disable and clear (flag bit) analog comparator interrupt
-        freeWheel();
-        waitMS(100); //delay(100);
-
-        Serial.print(count_/2);
-        Serial.println(F(" data points logged"));
-        
-        old_dt = 127;
-        old_comTime = 255;
-        for (count_=0;count_<sizeof(debArray);count_+=2)
-        {
-          sample();
-          old_dt += debArray[count_];
-          Serial.print(old_dt);
-          Serial.print(F(","));
-          old_comTime += debArray[count_+1];
-          Serial.println(old_comTime);
-        }
-
-        Serial.print(F("cycles/sec: "));
-        Serial.println(turnCounter/6);
-        if (cancelled)
-          Serial.println(F("CANCEL SPINUP"));
-        runningTime = millis();
-
-        if (rule_error)
-        {
-          Serial.print(F("Startup Error: "));
-          switch(rule_error)
-          {
+            case 0:
+              if (pct == 100)
+              {
+                //if (verboseLevel) Serial.println(F("closed loop"));
+                t *= 1.2;
+                com_state=1;
+              }
+            break;
             case 1:
-              Serial.println(F("More than one Lows detected"));
-              break;
-            case 2:
-              Serial.println(F("More than 7 forcings detected"));
-              break;
-            case 3:
-              Serial.println(F("commutation 7 or 8 must not be forced"));
-              break;
-            case 4:
-              Serial.println(F("Low not detected in first 6 commutations"));
+              tmp_counter++;
+              if (tmp_counter == 48)
+                com_state = 2;
               break;
             default:
-              break;
+              if (motor_speed<200)
+              {
+                duty += 1;
+                motor_speed = duty;
+              }
+            break;
           }
-        }
-        else
-          Serial.println(F("RUNNING, No charge"));
 
-        data_ptr = 0;
+
+          counter++;
+          if (counter >= 800 || T > 5000000)
+            break;
+        }        
+        
+        freeWheel();
+        ADCSRA = 135;
+        ADCSRB = 0;
+        BEMF_A_RISING();
+        
+        if (verboseLevel) Serial.print(F("t="));
+        if (verboseLevel) Serial.println(t);
+        if (verboseLevel) Serial.print(F("commutations="));
+        if (verboseLevel) Serial.println(counter);
+
+        //for (int i=0; i<sizeof(debArray); ++i)
+        //  if (verboseLevel) Serial.println(debArray[i]);
+        
+        spinupTime = millis();
+        runningTime = millis();
+
+        if (verboseLevel) Serial.println(F("RUNNING, No charge"));
         state = RUNNING_NO_CHARGE;
 
         vcc = readVcc();
-        Serial.print(F("Vcc = "));
-        Serial.println(vcc);
-        // DELETE THIS
-        //state = WAITING_FOR_CANCEL;
-
+        if (verboseLevel) Serial.print(F("Vcc = "));
+        if (verboseLevel) Serial.println(vcc);
       }
       break;
+
     case RUNNING_NO_CHARGE:
       {
-        vcc = readVcc();
+        //vcc = readVcc();
         unsigned int nowInSeconds = now/(1000*TT);
         sample();
 
         if (!isRunning(runningTime))
         {
-          Serial.println("STOPPED");
+          if (verboseLevel) Serial.println("STOPPED");
           state = STOPPED;
           break;
         }
@@ -548,8 +415,8 @@ void loop()
           {
             enableBuck();
             setBuckPWM(duty_cycle);
-            Serial.println(F("State: Gate Driver Enabled. Circuit Ready"));
-            whileMs(300)
+            if (verboseLevel) Serial.println(F("State: Gate Driver Enabled. Circuit Ready"));
+            whileMS(300)
               sample;
             
             state = RUNNING_CHARGE;
@@ -557,7 +424,7 @@ void loop()
           }
         }
 
-        dump(nowInSeconds);
+        dump();
       }
       break;
     case RUNNING_CHARGE:
@@ -572,7 +439,7 @@ void loop()
         {
           disableBuck();
 
-          Serial.println("STOPPED");
+          if (verboseLevel) Serial.println("STOPPED");
           state = STOPPED;
           break;
         }
@@ -581,8 +448,8 @@ void loop()
         {
           disableBuck();
 
-          Serial.println(F("Iin_filter < -0.01"));
-          whileMs(500)
+          if (verboseLevel) Serial.println(F("Iin_filter < -0.01"));
+          whileMS(500)
             sample();
           ok = false;
         }
@@ -591,10 +458,10 @@ void loop()
         {
           disableBuck();
 
-          Serial.print(F("Vin_filter <= 0.5+Vout_filter: "));
-          Serial.print(Vin_filter);
-          Serial.print(F(" <= 0.5+"));
-          Serial.println(Vout_filter);
+          if (verboseLevel) Serial.print(F("Vin_filter <= 0.5+Vout_filter: "));
+          if (verboseLevel) Serial.print(Vin_filter);
+          if (verboseLevel) Serial.print(F(" <= 0.5+"));
+          if (verboseLevel) Serial.println(Vout_filter);
           ok = false;
         }
 
@@ -602,10 +469,10 @@ void loop()
         {
           disableBuck();
 
-          Serial.print(F("Vout_filter >= VoutMax: "));
-          Serial.print(Vout_filter);
-          Serial.print(F(" >= "));
-          Serial.println(VoutMax);
+          if (verboseLevel) Serial.print(F("Vout_filter >= VoutMax: "));
+          if (verboseLevel) Serial.print(Vout_filter);
+          if (verboseLevel) Serial.print(F(" >= "));
+          if (verboseLevel) Serial.println(VoutMax);
           ok = false;
         }
   
@@ -613,17 +480,17 @@ void loop()
         {
           disableBuck();
 
-          Serial.print(F("Vout_filter < VoutMin: "));
-          Serial.print(Vout_filter);
-          Serial.print(F(" < "));
-          Serial.println(VoutMin);
+          if (verboseLevel) Serial.print(F("Vout_filter < VoutMin: "));
+          if (verboseLevel) Serial.print(Vout_filter);
+          if (verboseLevel) Serial.print(F(" < "));
+          if (verboseLevel) Serial.println(VoutMin);
           ok = false;
         }
         
         if (Vin_filter > VinMax && duty_cycle >= pwmMax)
         {
-          Serial.println(F("Vin_filter > VinMax: BREAKING to 16V"));
-          breakNow(16);
+          if (verboseLevel) Serial.println(F("Vin_filter > VinMax: BREAKING"));
+          breakNow();
         }
         
         if (shutDownFlag)
@@ -634,10 +501,10 @@ void loop()
             {
               disableBuck();
 
-              Serial.println(F("I < 0.04 timeout"));
+              if (verboseLevel) Serial.println(F("I < 0.04 timeout"));
 
               // Give voltage time to rise by 1 sec delay
-              whileMs(1000)
+              whileMS(1000)
                 sample();
 
               ok = false;
@@ -655,8 +522,8 @@ void loop()
           {
             timeStampInSeconds = nowInSeconds;
             shutDownFlag = true;
-            Serial.print(F("shutdown timestamp at "));
-            Serial.println(timeStampInSeconds);
+            if (verboseLevel) Serial.print(F("shutdown timestamp at "));
+            if (verboseLevel) Serial.println(timeStampInSeconds);
           }
         }
   
@@ -664,7 +531,7 @@ void loop()
         {
           state = RUNNING_NO_CHARGE;
           shutDownFlag = false;
-          Serial.println(F("State: No charge"));
+          if (verboseLevel) Serial.println(F("State: No charge"));
         }
         /*else
         {
@@ -716,49 +583,57 @@ void loop()
           float targetI;
           if (Vin_filter < (Vout_filter+2.))
           {
-            float I1 = getInterpolatedY_(Vout_filter+2., powercurve, &data_ptr);
+            float I1 = getInterpolatedY(Vout_filter+2., powercurve, &data_ptr);
             targetI = interpolate(Vout_filter, 0, Vout_filter+2., I1, Vin_filter);
           }
           else
-            targetI = getInterpolatedY_(Vin_filter, powercurve, &data_ptr);
+            targetI = getInterpolatedY(Vin_filter, powercurve, &data_ptr);
           
-          proportionalError = Iin_filter - targetI/4.;
+          proportionalError = Iin_filter - targetI/6.;
           float duty_update = 0.2 * proportionalError;
+          //myConstrain(duty_update,-0.04,0.04);
           duty_cycle -= duty_update;
 
           setBuckPWM(duty_cycle);
-          sync_pwm_positive_offset = duty_cycle - min_sync_pwm;
+          //sync_pwm_positive_offset = duty_cycle - min_sync_pwm;
         }
 
-        dumpCharging(nowInSeconds);
+        dump();
         //dump(nowInSeconds);
       }
       break;
+
     case STOPPED:
       {
         unsigned int timeOfRunInSeconds = (runningTime - spinupTime)/(1000*TT);
-        Serial.print(F("Turbine running time: "));
-        Serial.print(timeOfRunInSeconds);
-        Serial.println(F(" secs"));
+        if (verboseLevel) Serial.print(F("Turbine running time: "));
+        if (verboseLevel) Serial.print(timeOfRunInSeconds);
+        if (verboseLevel) Serial.println(F(" secs"));
 
-        if (rule_error)
-          Serial.println(F("commutation error -> no sensor adjust"));
-        else if (timeOfRunInSeconds < 2*60)
+        if (com_error)
         {
-          Serial.println(F("Up time < 2 min -> startup failed"));
-          if (enableWindSensor)
-            windSensorFeedback(false);
+          if (verboseLevel) Serial.println(F("commutation error -> no sensor adjust"));
         }
-        else if (timeOfRunInSeconds > 3*60)
+        else if (timeOfRunInSeconds < minRunTimeInSeconds)
         {
-          Serial.println(F("Up time > 3 min -> startup succeeded"));
+          if (verboseLevel) Serial.print(F("Up time < "));
+          if (verboseLevel) Serial.print(minRunTimeInSeconds);
+          if (verboseLevel) Serial.println(F("secs -> startup failed"));
           if (enableWindSensor)
-            windSensorFeedback(true);
+            windSensorFeedback2(false);
+        }
+        else
+        {
+          if (verboseLevel) Serial.print(F("Up time > "));
+          if (verboseLevel) Serial.print(minRunTimeInSeconds);
+          if (verboseLevel) Serial.println(F("secs -> startup succeeded"));
+          if (enableWindSensor)
+            windSensorFeedback2(true);
         }
         
-        Serial.println(F("WAITING"));
+        if (verboseLevel) Serial.println(F("WAITING"));
         if (enableWindSensor)
-          windSpeedClear();
+          windSpeedClear2();
         runningTime = millis();
         state = WAITING_FOR_CANCEL;
       }
@@ -766,13 +641,13 @@ void loop()
     
     case TEST:
       {
-        Serial.println(F("TEST"));
+        if (verboseLevel) Serial.println(F("TEST"));
         delay(1000);
       }
       break;
     default:
       {
-        Serial.println(F("default"));
+        if (verboseLevel) Serial.println(F("default"));
         delay(1000);
       }
       break;
