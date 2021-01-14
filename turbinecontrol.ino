@@ -4,19 +4,26 @@
 
 unsigned long timeStamp_verbose = 0;
 
+#define acs712VoltsPerAmp 0.066
+#define voltageDividerVoltsPerVolt 0.105662768
+//(5.5/47.)
+
 bool positive = true;
 void sample(float k)
 {
   float k1 = 1. - k;
-  Vin_raw = vcc*9.335*(analogRead(ADC_VOLTAGE_IN)/1023.);
+  //Vin_raw = vcc*9.335*(analogRead(ADC_VOLTAGE_IN)/1023.);
+  Vin_raw = (analogRead(ADC_VOLTAGE_IN)/1024.) * vcc / voltageDividerVoltsPerVolt;
   Vin_filter = k1*Vin_filter + k*Vin_raw;
-  Vout_raw = vcc*9.335*(analogRead(ADC_VOLTAGE_OUT)/1023.);
+  //Vout_raw = vcc*9.335*(analogRead(ADC_VOLTAGE_OUT)/1023.);
+  Vout_raw = (analogRead(ADC_VOLTAGE_OUT)/1024.) * vcc / voltageDividerVoltsPerVolt;
 #ifdef DEBUG
   Vout_filter_dbg = k1*Vout_filter_dbg + k*Vout_raw;
   Vout_raw = 12.3;
 #endif
   Vout_filter = k1*Vout_filter + k*Vout_raw;
-  Iin_raw = -(vcc * (analogRead(ADC_CURRENT_IN) - 512) / 1023.) / (2.45*0.066) - 0.08;
+  //Iin_raw = -(vcc * (analogRead(ADC_CURRENT_IN) - 512) / 1023.) / (2.45*0.066) - 0.08;
+  Iin_raw = -((analogRead(ADC_CURRENT_IN) - 512)/1024.) * vcc / acs712VoltsPerAmp;
   Iin_filter = k1*Iin_filter + k*Iin_raw;
   min_sync_pwm = 255 * Vout_filter / Vin_filter;
   myConstrain(min_sync_pwm, pwmMin, pwmMax)
@@ -145,7 +152,7 @@ void dump()
           {
             float inputWatt = Vin_filter*Iin_filter;
             Serial.print(F("du"));
-            Serial.print(int(duty_cycle,0));
+            Serial.print(int(duty_cycle));
             Serial.print(F(" Vi"));
             Serial.print(Vin_filter,1);
             Serial.print(F(" Vo"));

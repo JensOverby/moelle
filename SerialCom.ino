@@ -45,6 +45,7 @@ void printHelp()
   Serial.println(F("sensorparams <threshold> <gustminsecs> <gustmaxsecs> <gustcount> | set wind sensor parameters"));
   Serial.println(F("minruntime <sec> | set minimum ok run time"));
   Serial.println(F("commutate <cnt> | commutate motor forward"));
+  Serial.println(F("poweroffset <value> | spinup pwm offset"));
   Serial.println();
 }
 
