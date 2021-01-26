@@ -17,7 +17,9 @@ enum WorkSpcRole {CMD_IDLE=0,
                   CMD_WIND_PARAMS=15,
                   CMD_MIN_RUNTIME=16,
                   CMD_SAMPLE_STARTUP_WIND=17,
-                  CMD_COMMUTATE=18};
+                  CMD_COMMUTATE=18,
+                  CMD_STOP=19};
+                  
 char commandBuffer[15] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 
 static unsigned int bytesReceived = 0;
@@ -46,6 +48,7 @@ void printHelp()
   Serial.println(F("minruntime <sec> | set minimum ok run time"));
   Serial.println(F("commutate <cnt> | commutate motor forward"));
   Serial.println(F("poweroffset <value> | spinup pwm offset"));
+  Serial.println(F("stop <offset> | break to offset voltage above Vout. Default 0"));
   Serial.println();
 }
 
@@ -151,6 +154,10 @@ int getCommand()
         case 44599:
           bytesExpected = -1;
           c = CMD_COMMUTATE;
+          break;
+        case 1561:
+          bytesExpected = -1;
+          c = CMD_STOP;
           break;
         default:
           break;
@@ -303,6 +310,39 @@ void execCommand()
         breakNow(voltageBegin, voltageEnd, true);
     }
     break;
+  case CMD_STOP:
+    {
+      char offs[5]="0";
+      sscanf((char*)(commandBuffer+1), "%s", offs);
+      float off = atof(offs);
+      digitalWrite(enableDriverPin, false);
+      //commutations = 0;
+      //unsigned long tmp_time = millis();
+      while (!getCommand())
+      {
+        sample(0.1);
+        if((Vout_filter < VoutMin) || (Vin_filter < (Vout_filter+off)))
+          digitalWrite(dumploadPin, false);
+        else
+          digitalWrite(dumploadPin, true);
+
+        if (rpm_filter < 70)
+          break;
+      
+        /*float t = (millis() - tmp_time) / (1000.*TT);
+        if (t > 1)
+        {
+          int tmp_rpm = 60.*commutations/(t*48.);
+          if (rpm_filter < 70)
+            break;
+          commutations = 0;
+          tmp_time = millis();
+        }*/
+      }
+      digitalWrite(dumploadPin, false);
+    }
+    break;
+    
   case CMD_SAMPLE:
     {
       if (state==RUNNING_CHARGE)
