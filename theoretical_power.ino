@@ -14,11 +14,11 @@ int com_error = 0;
 
 float vcc = 5.;
 bool shutDownFlag = false;
-float Vin_filter=0, Vout_filter=0, Iin_filter=0, rpm_filter=0;
+float Vin_filter=0, Vout_filter=0, Iout_filter=0, rpm_filter=0;
 #ifdef DEBUG
 float Vout_filter_dbg=0;
 #endif
-float Iin_raw, Vin_raw, Vout_raw;
+float Iout_raw, Vin_raw, Vout_raw;
 unsigned int min_sync_pwm = 255;
 int verboseLevel = 2, verboseLevel_old=verboseLevel;
 
@@ -35,10 +35,12 @@ unsigned int minRunTimeInSeconds = 30;
 bool acknowledge = false;
 bool spinupNow = false;
 bool enableWindSensor = true;
-bool floatingBreaking = false;
 
-int data_ptr = 0;
-float powercurve[26];
+bool Vout_too_high = false;
+bool Vin_too_high = false;
+
+//int data_ptr = 0;
+//float powercurve[26];
 
 float bemfPhaseA = 0;
 //unsigned long commutations = 0;
@@ -65,9 +67,15 @@ void setup()
   TCCR0B = _BV(CS00);
 
   // Timer1 module setting: set clock source to clkI/O / 1 (no prescaling)
-  TCCR1A =  0x21 | 0x81;
-  TCCR1B = 0x01;
-  
+  //TCCR1A =  0x21 | 0x81;
+  //TCCR1B = 0x01;
+  TCCR1A = (1 << COM1A1) | (1 << WGM11);
+  TCCR1A |= (1 << COM1B1);
+  TCCR1B = (1 << CS10) | (1 << WGM13) | (1 << WGM12);
+  ICR1 = 255;  //This should be my frequency select: F_out = (F_clk/(2*prescaler*(1+ICR1)) = 10 kHz
+  //OCR1A = 64;  //This should set D to ((1 + OCR1A)/(1 + ICR1)) * 100 = 5.1%
+  //OCR1B = 254;
+
   // Timer2 module setting: set clock source to clkI/O / 1 (no prescaling)
   TCCR2A =  0x81;
   TCCR2B = 0x01;
@@ -95,8 +103,8 @@ void setup()
   if (verboseLevel) Serial.print(F("min_sync_pwm = "));
   if (verboseLevel) Serial.println(min_sync_pwm);
 
-  if (verboseLevel) Serial.println(F("Power Curve:"));
-  eepromReadFloat16(powercurve, sizeof(powercurve)/4);
+  //if (verboseLevel) Serial.println(F("Power Curve:"));
+  //eepromReadFloat16(powercurve, sizeof(powercurve)/4);
 }
 
 bool synchronousBuck = true;
@@ -105,6 +113,8 @@ bool buckEnabled = false;
 void enableBuck()
 {
   duty_cycle = min_sync_pwm + 5;
+  if (duty_cycle < 180)
+    duty_cycle = 180;
   synchronousBuck = true;
   buckEnabled = true;
 }
@@ -123,7 +133,7 @@ void setBuckPWM(float& pwm)
 
   if (synchronousBuck)
   {
-    if (pwm < 160)
+    if (pwm < 160 && pwm < (min_sync_pwm+5))
     {
       synchronousBuck = false;
       digitalWrite(enableDriverPin, false);
@@ -136,7 +146,7 @@ void setBuckPWM(float& pwm)
   }
   else
   {
-    if (pwm > 170)
+    if (pwm > 170 || pwm > (min_sync_pwm+10))
     {
       if (verboseLevel) Serial.println("Synchronous");
       synchronousBuck = true;
@@ -159,17 +169,37 @@ void setBuckPWM(float& pwm)
 
 void loop()
 {
-  /*digitalWrite(A_SD, LOW);
+  /*digitalWrite(A_SD, HIGH);
   digitalWrite(A_IN, LOW);
 
   analogWrite(B_SD, 40);
   digitalWrite(B_IN, HIGH);
 
-  digitalWrite(C_SD, HIGH);
+  digitalWrite(C_SD, LOW);
   digitalWrite(C_IN, LOW);
 
   while (true)
     waitMS(1000);*/
+
+  /*Vin_filter = 16.;
+  Iin_filter = 0.22;
+  rpm_filter = 202;
+
+  float powerExp = getExpectedPower(rpm_filter);
+  Serial.println(powerExp);
+  float powerReal = Vin_filter * Iin_filter;
+  Serial.println(powerReal);
+  float duty_update = powerReal - powerExp;
+  Serial.println(duty_update);
+  myConstrain(duty_update, -0.1, 0.1)
+  Serial.println(duty_update);
+  duty_cycle -= duty_update;
+  Serial.println(duty_cycle);
+  //setBuckPWM(duty_cycle);
+
+  while (true)
+    waitMS(1000);*/
+
 
   if (getCommand())
     execCommand();
@@ -397,9 +427,9 @@ void loop()
         {
           if ((Vout_filter > VoutMin) && (Vout_filter < VoutMax))
           {
+            if (verboseLevel) Serial.println(F("State: Gate Driver Enabled. Circuit Ready"));
             enableBuck();
             setBuckPWM(duty_cycle);
-            if (verboseLevel) Serial.println(F("State: Gate Driver Enabled. Circuit Ready"));
             whileMS(300)
               sample;
             
@@ -429,11 +459,11 @@ void loop()
           break;
         }
         
-        if (Iin_filter < -0.5)
+        if (Iout_filter < -0.5)
         {
           disableBuck();
 
-          if (verboseLevel) Serial.println(F("Iin_filter < -0.5"));
+          if (verboseLevel) Serial.println(F("Iout_filter < -0.5"));
           whileMS(500)
             sample();
           ok = false;
@@ -469,7 +499,7 @@ void loop()
         
         if (shutDownFlag)
         {
-          if (Iin_filter < 0.08 /*|| Vin_filter < Vout_filter*/)
+          if (Iout_filter < 0.08 /*|| Vin_filter < Vout_filter*/)
           {
             if (nowInSeconds > timeStampInSeconds+8)
             {
@@ -490,7 +520,7 @@ void loop()
             timeStampInSeconds = nowInSeconds;
           }
         }
-        else if (Iin_filter < 0.08 /*|| Vin_filter < Vout_filter*/)
+        else if (Iout_filter < 0.08 /*|| Vin_filter < Vout_filter*/)
         {
           if (nowInSeconds > timeStampInSeconds+10)
           {
@@ -515,27 +545,50 @@ void loop()
           float duty_update;
           if (Vout_filter < VoutMax)
           {
-            if (floatingBreaking)
+            if (Vout_too_high)
             {
               digitalWrite(dumploadPin, false);
-              floatingBreaking = false;
+              Vout_too_high = false;
             }
 
             float powerExp = getExpectedPower(rpm_filter);
-            float powerReal = Vin_filter * Iin_filter;
+            float powerReal = Vout_filter * Iout_filter;
 
             duty_update = powerReal - powerExp;
+
+
+            if (powerReal < 10 && rpm_filter < 150 && duty_cycle > 190)
+              duty_update = 1;
           }
           else
           {
             if (Vin_filter > 20)
             {
               digitalWrite(dumploadPin, true);
-              floatingBreaking = true;
+              Vout_too_high = true;
             }
 
             duty_update = Vout_filter - VoutMax;
           }
+
+          if (Vin_filter > VinMax)
+          {
+            duty_update = -1;
+            if (duty_cycle >= pwmMax)
+            {
+              digitalWrite(dumploadPin, true);
+              Vin_too_high = true;
+            }
+          }
+          else 
+          {
+            if (Vin_too_high)
+            {
+              digitalWrite(dumploadPin, false);
+              Vin_too_high = false;
+            }
+          }
+
 
           myConstrain(duty_update, -0.1, 0.1)
           duty_cycle -= duty_update;

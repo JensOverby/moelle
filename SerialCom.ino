@@ -10,10 +10,10 @@ enum WorkSpcRole {CMD_IDLE=0,
                   CMD_ENABLE_WIND_SENSOR=7,
                   CMD_SAMPLE=8,
                   CMD_SIMRUN=9,
-                  CMD_LOAD_FACTORY_SETTINGS=11,
-                  CMD_POWERCURVE=12,
-                  CMD_SET_POWER=13,
-                  CMD_STORE_POWERCURVE=14,
+                  //CMD_LOAD_FACTORY_SETTINGS=11,
+                  //CMD_POWERCURVE=12,
+                  //CMD_SET_POWER=13,
+                  //CMD_STORE_POWERCURVE=14,
                   CMD_WIND_PARAMS=15,
                   CMD_MIN_RUNTIME=16,
                   CMD_SAMPLE_STARTUP_WIND=17,
@@ -35,7 +35,7 @@ void printHelp()
   Serial.println(F("spinup | spinup turbine now"));
   Serial.println(F("initstartwind | sample startup wind"));
   Serial.println(F("windsense <1/0> | wind sensor on/off"));
-  Serial.println(F("sample | sample Vin,Iin,Vout"));
+  Serial.println(F("sample | sample Vin,Iout,Vout"));
   Serial.println(F("verbose <1/0> | verbose on/off"));
   Serial.println(F("duty <value> | set duty (0-255)"));
   Serial.println(F("dumpload <V-begin> <V-end> | use dump resistor (optional params)"));
@@ -123,7 +123,7 @@ int getCommand()
           bytesExpected = -1;
           c = CMD_SIMRUN;
           break;
-        case 54619:
+        /*case 54619:
           bytesExpected = -1;
           c = CMD_LOAD_FACTORY_SETTINGS;
           break;
@@ -138,7 +138,7 @@ int getCommand()
         case 55971:
           bytesExpected = -1;
           c = CMD_STORE_POWERCURVE;
-          break;
+          break;*/
         case 51939:
           bytesExpected = -1;
           c = CMD_WIND_PARAMS;
@@ -361,7 +361,7 @@ void execCommand()
           Serial.print(F("V_in="));
           Serial.print(Vin_filter);
           Serial.print(F(" I_in="));
-          Serial.print(Iin_filter);
+          Serial.print(Iout_filter);
           Serial.print(F(" V_out="));
           Serial.println(Vout_filter);
         }
@@ -382,7 +382,7 @@ void execCommand()
       sscanf((char*)(commandBuffer+1), "%d", &simRun);
     }
     break;
-  case CMD_LOAD_FACTORY_SETTINGS:
+  /*case CMD_LOAD_FACTORY_SETTINGS:
     if (state==RUNNING_CHARGE)
     {
       Serial.println(F("Command forbidden in charging state!"));
@@ -430,7 +430,7 @@ void execCommand()
     break;
   case CMD_STORE_POWERCURVE:
     eepromUpdateFloat16(powercurve, sizeof(powercurve)/4);
-    break;
+    break;*/
   case CMD_WIND_PARAMS:
     {
       char val[4][5] = {"-1","-1","-1","-1"};

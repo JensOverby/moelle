@@ -1,12 +1,12 @@
 #define ADC_VOLTAGE_IN  A0
-#define ADC_CURRENT_IN  A1
+#define ADC_CURRENT_OUT  A1
 #define ADC_VOLTAGE_OUT A7
 
 unsigned long timeStamp_verbose = 0;
 unsigned long rpm_time = 0;
 
 #define acs712VoltsPerAmp 0.066
-#define voltageDividerVoltsPerVolt 0.105662768
+#define voltageDividerVoltsPerVolt 0.089637248
 //(5.5/47.)
 
 bool positive = true;
@@ -23,9 +23,9 @@ void sample(float k)
   Vout_raw = 12.3;
 #endif
   Vout_filter = k1*Vout_filter + k*Vout_raw;
-  //Iin_raw = -(vcc * (analogRead(ADC_CURRENT_IN) - 512) / 1023.) / (2.45*0.066) - 0.08;
-  Iin_raw = -((analogRead(ADC_CURRENT_IN) - 510)/1024.) * vcc / acs712VoltsPerAmp - 0.02;
-  Iin_filter = k1*Iin_filter + k*Iin_raw;
+  //Iout_raw = -(vcc * (analogRead(ADC_CURRENT_IN) - 512) / 1023.) / (2.45*0.066) - 0.08;
+  Iout_raw = -((analogRead(ADC_CURRENT_OUT) - 508)/1024.) * 5. / acs712VoltsPerAmp;// - 0.02;
+  Iout_filter = k1*Iout_filter + k*Iout_raw;
   min_sync_pwm = 255 * Vout_filter / Vin_filter;
   myConstrain(min_sync_pwm, pwmMin, pwmMax)
 
@@ -37,9 +37,11 @@ void sample(float k)
     {
       //++commutations;
       unsigned long t = millis();
-      int dt = (t-rpm_time);
+      unsigned long dt = t-rpm_time;
       rpm_time = t;
-      float rps = 1000./(dt*48.);
+      if (dt <= 0)
+        dt = 1;
+      float rps = 32000./(dt*48.);
       rpm_filter = k1*rpm_filter + k*rps*60;
       positive = true;
     }
@@ -51,25 +53,29 @@ void sample(float k)
     {
       //++commutations;
       unsigned long t = millis();
-      int dt = (t-rpm_time);
+      int dt = t-rpm_time;
       rpm_time = t;
-      float rps = 1000./(dt*48.);
+      if (dt <= 0)
+        dt = 1;
+      float rps = 32000./(dt*48.);
       rpm_filter = k1*rpm_filter + k*rps*60;
       positive = false;
     }
   }
 }
 
-#define RPM_TO_WINDSPEED_PROPORTIONAL_FACTOR 0.01720396 // = 1 / (tip_speed_ratio*60/circumference), where tsr=7 and circum=2*pi*r
+#define RPM_TO_WINDSPEED_PROPORTIONAL_FACTOR 0.01720396 // = circumference / (tip_speed_ratio*60), where tsr=7 and circum=2*pi*r
 #define POWER_FACTOR 0.7935   // = 0.5*blade_efficiency*Area, where blade_efficiency Cp=0.38197 and Area=pi*r^2
+// Radius r = 1.15 meter
 
 // Cp=0.38197 is Hugh Piggotts value, but is 0.3 in http://www.windandwet.com/windturbine/power_calc/index.php
 // and 0.4 in http://www.ijsrp.org/research_paper_feb2012/ijsrp-feb-2012-06.pdf
       
 float getExpectedPower(float rpm)
 {
-  float windspeed = rpm * RPM_TO_WINDSPEED_PROPORTIONAL_FACTOR;
+  float windspeed = rpm * RPM_TO_WINDSPEED_PROPORTIONAL_FACTOR; // Unit is meter/sec
   float power = POWER_FACTOR * pow(windspeed, 3);
+  return power;
 }
 
 
@@ -137,7 +143,7 @@ void breakNow(int voltageBegin, int voltageEnd, bool dump)
       {
         if (verboseLevel) Serial.print(Vin_filter);
         if (verboseLevel) Serial.print(F(","));
-        if (verboseLevel) Serial.println(Iin_filter);
+        if (verboseLevel) Serial.println(Iout_filter);
       }
     }
   }
@@ -174,7 +180,7 @@ void dump()
           break;
         case 2:
           {
-            float inputWatt = Vin_filter*Iin_filter;
+            float outputWatt = Vout_filter*Iout_filter;
             Serial.print(F("du"));
             Serial.print(int(duty_cycle));
             Serial.print(F(" Vi"));
@@ -185,10 +191,10 @@ void dump()
       #else
             Serial.print(Vout_filter,1);
       #endif
-            Serial.print(F(" Ii"));
-            Serial.print(Iin_filter,2);
+            Serial.print(F(" Io"));
+            Serial.print(Iout_filter,2);
             Serial.print(F(" W"));
-            Serial.print(inputWatt,0);
+            Serial.print(outputWatt,0);
             if (state == RUNNING_CHARGE)
             {
               Serial.print(F(" Ie"));
