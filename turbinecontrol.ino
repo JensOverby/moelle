@@ -1,41 +1,32 @@
-#define ADC_VOLTAGE_IN  A0
-#define ADC_CURRENT_OUT  A1
-#define ADC_VOLTAGE_OUT A7
 
 unsigned long timeStamp_verbose = 0;
 unsigned long rpm_time = 0;
 
-#define acs712VoltsPerAmp 0.066
-#define voltageDividerVoltsPerVolt 0.089637248
+
 //(5.5/47.)
 
 bool positive = true;
 void sample(float k)
 {
   float k1 = 1. - k;
-  //Vin_raw = vcc*9.335*(analogRead(ADC_VOLTAGE_IN)/1023.);
   Vin_raw = (analogRead(ADC_VOLTAGE_IN)/1024.) * vcc / voltageDividerVoltsPerVolt;
   Vin_filter = k1*Vin_filter + k*Vin_raw;
-  //Vout_raw = vcc*9.335*(analogRead(ADC_VOLTAGE_OUT)/1023.);
   Vout_raw = (analogRead(ADC_VOLTAGE_OUT)/1024.) * vcc / voltageDividerVoltsPerVolt;
 #ifdef DEBUG
   Vout_filter_dbg = k1*Vout_filter_dbg + k*Vout_raw;
   Vout_raw = 12.3;
 #endif
   Vout_filter = k1*Vout_filter + k*Vout_raw;
-  //Iout_raw = -(vcc * (analogRead(ADC_CURRENT_IN) - 512) / 1023.) / (2.45*0.066) - 0.08;
   Iout_raw = -((analogRead(ADC_CURRENT_OUT) - 508)/1024.) * 5. / acs712VoltsPerAmp;// - 0.02;
   Iout_filter = k1*Iout_filter + k*Iout_raw;
   min_sync_pwm = 255 * Vout_filter / Vin_filter;
   myConstrain(min_sync_pwm, pwmMin, pwmMax)
-
 
   if ((ACSR & 0x20) == zc_event_val)
   {
     bemfPhaseA = 0.3 + 0.7*bemfPhaseA;
     if (!positive && bemfPhaseA > 0)
     {
-      //++commutations;
       unsigned long t = millis();
       unsigned long dt = t-rpm_time;
       rpm_time = t;
@@ -51,7 +42,6 @@ void sample(float k)
     bemfPhaseA = -0.3 + 0.7*bemfPhaseA;
     if (positive && bemfPhaseA <= 0)
     {
-      //++commutations;
       unsigned long t = millis();
       int dt = t-rpm_time;
       rpm_time = t;
@@ -64,7 +54,8 @@ void sample(float k)
   }
 }
 
-#define RPM_TO_WINDSPEED_PROPORTIONAL_FACTOR 0.01720396 // = circumference / (tip_speed_ratio*60), where tsr=7 and circum=2*pi*r
+#define RPM_TO_TIP_SPEED_FACTOR 0.120427718 // = circumference / 60, where circum=2*pi*r
+//#define RPM_TO_WINDSPEED_PROPORTIONAL_FACTOR 0.01720396 // = circumference / (tip_speed_ratio*60), where tsr=7 and circum=2*pi*r
 #define POWER_FACTOR 0.7935   // = 0.5*blade_efficiency*Area, where blade_efficiency Cp=0.38197 and Area=pi*r^2
 // Radius r = 1.15 meter
 
@@ -73,7 +64,8 @@ void sample(float k)
       
 float getExpectedPower(float rpm)
 {
-  float windspeed = rpm * RPM_TO_WINDSPEED_PROPORTIONAL_FACTOR; // Unit is meter/sec
+  float windspeed = rpm * RPM_TO_TIP_SPEED_FACTOR / valFloat[TipSpeedRatio_ID]; // Unit is meter/sec
+  //float windspeed = rpm * RPM_TO_WINDSPEED_PROPORTIONAL_FACTOR; // Unit is meter/sec
   float power = POWER_FACTOR * pow(windspeed, 3);
   return power;
 }
@@ -132,7 +124,7 @@ void breakNow(int voltageBegin, int voltageEnd, bool dump)
       break;
     }
 
-    if((Vin_filter < voltageEnd) || (Vout_filter < VoutMin) || (Vin_filter < (Vout_filter+0.4)))
+    if((Vin_filter < voltageEnd) || (Vout_filter < valFloat[VoutMin_ID]) || (Vin_filter < (Vout_filter+0.4)))
       break;
 
     if (now > (lastTimeDuty + 50*TT))
@@ -181,7 +173,10 @@ void dump()
         case 2:
           {
             float outputWatt = Vout_filter*Iout_filter;
-            Serial.print(F("du"));
+            if (continuousModeBuck)
+              Serial.print(F("du"));
+            else
+              Serial.print(F("duA"));
             Serial.print(int(duty_cycle));
             Serial.print(F(" Vi"));
             Serial.print(Vin_filter,1);

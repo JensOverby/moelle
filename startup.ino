@@ -1,5 +1,4 @@
 int lastCount;
-byte zc_event_val;
 
 // Analog comparator ISR
 /*ISR (ANALOG_COMP_vect)
@@ -179,6 +178,18 @@ void freeWheel()
   digitalWrite(C_IN, LOW);
 }
 
+void shortPhases()
+{
+  digitalWrite(A_SD, HIGH);
+  digitalWrite(A_IN, LOW);
+
+  digitalWrite(B_SD, HIGH);
+  digitalWrite(B_IN, LOW);
+  
+  digitalWrite(C_SD, HIGH);
+  digitalWrite(C_IN, LOW);
+}
+
 void makeAcknowledge(int directio, int commutations)
 {
   waitMS(300);
@@ -207,7 +218,7 @@ bool isRunning(unsigned long& refTime)
     return true;
   }
   int count = (now-refTime)/(1000*TT);
-  if (count > 25)
+  if (count > 10)
     return false;
   if (count > 2)
   {
@@ -221,11 +232,17 @@ bool isRunning(unsigned long& refTime)
   return true;
 }
 
-unsigned long zeroCrossSearch(unsigned long t, int hyst, bool zero_cross_terminate)
+/*    This function:
+ *     t           : is time duration of a single commutation
+ *     zc_event_val: a value that toggles for each commutation. Rising or Falling edge.
+
+ */
+unsigned long zeroCrossSearch(unsigned long t_max, int hyst, unsigned long t_min)
 {
+  bool zero_cross_terminate = (t_min != 0);
   unsigned long i, zc=0;
   int c = -hyst;
-  for (i=0; i<t; ++i)
+  for (i=0; i<t_max; ++i)
   {
     if ((ACSR & 0x20) == zc_event_val)
       ++c;
@@ -234,7 +251,7 @@ unsigned long zeroCrossSearch(unsigned long t, int hyst, bool zero_cross_termina
       if (c > -hyst)
         --c;
     }
-    if (c > 0 && zc == 0)
+    if (c > 0 && zc == 0 && i > t_min)
     {
       zc = i;
       if (zero_cross_terminate)

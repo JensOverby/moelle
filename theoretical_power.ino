@@ -4,7 +4,7 @@
 
 bool simRun = false;
 
-enum{INIT,WAITING_FOR_CANCEL,WAITING,SPINUP,RUNNING_NO_CHARGE,RUNNING_CHARGE,STOPPED,BREAKING,TEST} state = INIT;
+enum{INIT,WAITING,SPINUP,RUNNING_NO_CHARGE,RUNNING_CHARGE,STOPPED,BREAKING,TEST} state = INIT;
 
 unsigned long spinupTime, runningTime=0;
 unsigned int timeStampInSeconds = 0;
@@ -22,9 +22,8 @@ float Iout_raw, Vin_raw, Vout_raw;
 unsigned int min_sync_pwm = 255;
 int verboseLevel = 2, verboseLevel_old=verboseLevel;
 
-float duty_cycle = pwmMax;
+unsigned int duty_cycle = pwmMax;
 float proportionalError=0;
-//float sync_pwm_positive_offset = 0;
 
 float pressureThreshold = 0.1;
 byte gust_spacing_min = 2;
@@ -35,15 +34,14 @@ unsigned int minRunTimeInSeconds = 30;
 bool acknowledge = false;
 bool spinupNow = false;
 bool enableWindSensor = true;
+bool continuousModeBuck = true;
+bool buckEnabled = false;
 
 bool Vout_too_high = false;
 bool Vin_too_high = false;
 
-//int data_ptr = 0;
-//float powercurve[26];
-
 float bemfPhaseA = 0;
-//unsigned long commutations = 0;
+
 
 void setup()
 {
@@ -104,18 +102,18 @@ void setup()
   if (verboseLevel) Serial.println(min_sync_pwm);
 
   //if (verboseLevel) Serial.println(F("Power Curve:"));
-  //eepromReadFloat16(powercurve, sizeof(powercurve)/4);
+  eepromReadFloat16(valFloat, sizeof(valFloat)/4);
 }
 
-bool synchronousBuck = true;
-bool buckEnabled = false;
+unsigned int enablePwm = 255;
 
 void enableBuck()
 {
+  enablePwm = 255;
   duty_cycle = min_sync_pwm + 5;
   if (duty_cycle < 180)
     duty_cycle = 180;
-  synchronousBuck = true;
+  continuousModeBuck = true;
   buckEnabled = true;
 }
 
@@ -126,18 +124,53 @@ void disableBuck()
   buckEnabled = false;
 }
 
-void setBuckPWM(float& pwm)
+void setBuckPWM(unsigned int& pwm)
+{
+  if (!buckEnabled)
+    return;
+
+  if (pwm < min_sync_pwm && rpm_filter < 220)
+  {
+    pwm = min_sync_pwm;
+    if (enablePwm > 235)
+      enablePwm--;
+  }
+  else if (enablePwm < 255)
+    enablePwm++;
+  if (pwm > pwmMax)
+    pwm = pwmMax;
+
+  //myConstrain(pwm, min_sync_pwm, pwmMax)
+
+  /*byte enablePWM = 255;
+  if (rpm_filter < 200)
+    enablePWM = 210;*/
+
+  //analogWrite(enableDriverPin, enablePWM);
+  digitalWrite(enableDriverPin, true);
+  analogWrite(highPin, pwm);
+
+  
+
+  /*byte enablePWM = 255;
+  if (pwm < 160)
+    enablePWM = pwm + 95;
+  
+  analogWrite(enableDriverPin, enablePWM);
+  analogWrite(highPin, pwm);*/
+}
+
+/*void setBuckPWM(float& pwm)
 {
   if (!buckEnabled)
     return;
 
   if (synchronousBuck)
   {
-    if (pwm < 160 && pwm < (min_sync_pwm+5))
+    if (pwm < 160) // && pwm < (min_sync_pwm+5))
     {
       synchronousBuck = false;
       digitalWrite(enableDriverPin, false);
-      if (verboseLevel) Serial.println("Asynchronous");
     }
     else
     {
@@ -146,9 +179,8 @@ void setBuckPWM(float& pwm)
   }
   else
   {
-    if (pwm > 170 || pwm > (min_sync_pwm+10))
+    if (pwm > 170) // || pwm > (min_sync_pwm+10))
     {
-      if (verboseLevel) Serial.println("Synchronous");
       synchronousBuck = true;
       digitalWrite(enableDriverPin, false);
       myConstrain(pwm, min_sync_pwm, pwmMax)
@@ -165,41 +197,21 @@ void setBuckPWM(float& pwm)
     digitalWrite(highPin, true);
     analogWrite(enableDriverPin, pwm);
   }
-}
+}*/
 
 void loop()
 {
-  /*digitalWrite(A_SD, HIGH);
+  /*digitalWrite(A_SD, LOW);
   digitalWrite(A_IN, LOW);
 
   analogWrite(B_SD, 40);
   digitalWrite(B_IN, HIGH);
 
-  digitalWrite(C_SD, LOW);
+  digitalWrite(C_SD, HIGH);
   digitalWrite(C_IN, LOW);
 
   while (true)
     waitMS(1000);*/
-
-  /*Vin_filter = 16.;
-  Iin_filter = 0.22;
-  rpm_filter = 202;
-
-  float powerExp = getExpectedPower(rpm_filter);
-  Serial.println(powerExp);
-  float powerReal = Vin_filter * Iin_filter;
-  Serial.println(powerReal);
-  float duty_update = powerReal - powerExp;
-  Serial.println(duty_update);
-  myConstrain(duty_update, -0.1, 0.1)
-  Serial.println(duty_update);
-  duty_cycle -= duty_update;
-  Serial.println(duty_cycle);
-  //setBuckPWM(duty_cycle);
-
-  while (true)
-    waitMS(1000);*/
-
 
   if (getCommand())
     execCommand();
@@ -209,19 +221,16 @@ void loop()
   {
     case INIT:
       {
-        //state = RUNNING_NO_CHARGE;
-        //break;
+        shortPhases();
 
-        unsigned int valuePhaseB = analogRead(A2);
         bool verbose = (now - runningTime > 1000*TT);
         if (verbose)
         {
           runningTime = now;
-          if (verboseLevel) Serial.print(F("INIT: measured speed value = "));
-          if (verboseLevel) Serial.println(valuePhaseB);
+          if (verboseLevel) Serial.println(F("INIT STATE"));
         }
-        //spinupNow = true;
-        if (spinupNow || acknowledge || valuePhaseB > PHASE_THRESHOLD)
+
+        if (spinupNow || acknowledge)
         {
           acknowledge = false;
           runningTime = now;
@@ -234,7 +243,7 @@ void loop()
             windSpeedClear2();
   
           runningTime = millis();
-          state = WAITING_FOR_CANCEL;
+          state = WAITING;
           if (verboseLevel) Serial.println(F("WAITING"));
         }
 
@@ -242,44 +251,19 @@ void loop()
         //waitMS(500);
       }
       break;
-    case WAITING_FOR_CANCEL:
-      {
-        unsigned int valuePhaseB = analogRead(A2);
-        if (acknowledge || valuePhaseB > PHASE_THRESHOLD)
-        {
-          acknowledge = false;
-          runningTime = millis();
-          while (isRunning(runningTime))
-            waitMS(20);
 
-          makeAcknowledge(-1);
-          state = INIT;
-          waitMS(1000);
-          break;
-        }
-        
-        unsigned int waitTimeInSeconds = (now - runningTime)/(1000*TT);
-        if (waitTimeInSeconds > 15 || spinupNow)
-        {
-          state = WAITING;
-          runningTime = 0;
-        }
-
-        getWindSpeedOK2();
-        //waitMS(20);
-      }
-      break;
     case WAITING:
       {
-        unsigned int valuePhaseB = analogRead(A2);
-        if (acknowledge || valuePhaseB > PHASE_THRESHOLD)
+        shortPhases();
+
+        if (acknowledge)
         {
           acknowledge = false;
           runningTime = millis();
           while (isRunning(runningTime))
             waitMS(20);
 
-          makeAcknowledge(-1);
+          //makeAcknowledge(-1);
           state = INIT;
           waitMS(1000);
           break;
@@ -301,7 +285,12 @@ void loop()
       break;
     case SPINUP:
       {
-        //byte debArray[600];
+        //int8_t debArray[300];
+        int sample = 4000;
+
+        freeWheel();
+        waitMS(1000);
+        
         int counter = 0;
         com_error = 0;
 
@@ -318,12 +307,18 @@ void loop()
         spinupTime = millis();
 
         unsigned long t = 40000;
+        unsigned long t_max = t;
+        unsigned long t_min = 0;
+        int error = 0;
+        unsigned long zc = 0;
         byte com_state = 0;
+
+        
         motor_speed = 60;
         float duty = motor_speed;
         float fac = 1;
-        unsigned int tmp_counter = 0;
-        byte pct;
+        int pct = 0;
+        int myc = 0;
 
         unsigned long T = 0;
 
@@ -333,75 +328,95 @@ void loop()
           bldc_step++;
           bldc_step %= 6;
 
-          if (com_state < 2)
-          {
-            unsigned long zc = zeroCrossSearch(t, t/10);
-            pct = (float(zc)/t) * 100;
-            int error = pct - 90;
-            t = t + fac*(t/6500.) * error;
-          }
-          else
-          {
-            t = zeroCrossSearch(1.2*t, t/40, true);
-          }
-
-          T += t;
-          int tmp = t / 10;
-          if (tmp < 100 || tmp>6000)
-          {
-            freeWheel();
-            Serial.println(F("Commutation Error!"));
-            com_error = 1;
-            break;
-          }
-
-
           switch (com_state)
           {
             case 0:
+              zc = zeroCrossSearch(t, t/10);
+              pct = (float(zc)/t) * 100;
+              error = pct - 90;
+              t = t + fac*(t/6500.) * error;
               if (pct == 100)
               {
-                t *= 1.2;
-                com_state=1;
+                myc++;
+                if (myc>5)
+                {
+                  com_state=1;
+                  t /= 0.87f; // around 90%
+                  myc = 0;
+                }
               }
-            break;
-            case 1:
-              tmp_counter++;
-              if (tmp_counter == 48)
-                com_state = 2;
               break;
+            case 1: // Really narrow transition state
+              t = zeroCrossSearch(1.05*t, t/40, 0.92*t);
+              ++myc;
+              duty += 1;
+              motor_speed = duty;
+              if (myc > 70)
+                com_state=2;
+              break;
+              
             default:
+              t = zeroCrossSearch(1.1*t, t/40, 0.85*t);
               if (motor_speed<230)
               {
                 duty += 1;
                 motor_speed = duty;
               }
+              break;
+          }
+
+          T += t;
+          int tmp = t / 10;
+
+          if (tmp < 100 || tmp>6000)
+          {
+            freeWheel();
+            Serial.print(F("Commutation Error! State="));
+            Serial.println(com_state);
+            com_error = 1;
             break;
           }
 
+          /*if (counter < 300)
+          {
+            int val = t/10 - sample;
+            if (val>125)
+              val=125;
+            if (val<-125)
+              val=-125;
+            sample += val;
+            debArray[counter] = (int8_t)val;
+          }*/
 
           counter++;
           if (counter >= 800 || T > 5000000)
             break;
+
+          //if (com_state==2)
+          //  break;
         }        
         
         freeWheel();
         ADCSRA = 135;
         ADCSRB = 0;
         BEMF_A_RISING();
-        
+
+        /*for (int i=0; i<counter; ++i)
+        {
+          Serial.println(debArray[i]);
+        }
+        Serial.print("comstate = ");
+        Serial.println(com_state);*/
+
         if (verboseLevel) Serial.print(F("t="));
         if (verboseLevel) Serial.println(t);
         if (verboseLevel) Serial.print(F("commutations="));
         if (verboseLevel) Serial.println(counter);
 
-        //for (int i=0; i<sizeof(debArray); ++i)
-        //  if (verboseLevel) Serial.println(debArray[i]);
-        
         spinupTime = millis();
         runningTime = millis();
 
-        if (verboseLevel) Serial.println(F("RUNNING, No charge"));
+        if (verboseLevel) Serial.println(F("State: RUNNING, No charge"));
         state = RUNNING_NO_CHARGE;
 
         vcc = readVcc();
@@ -418,14 +433,14 @@ void loop()
 
         if (!isRunning(runningTime))
         {
-          if (verboseLevel) Serial.println("STOPPED");
+          if (verboseLevel) Serial.println("State: STOPPED");
           state = STOPPED;
           break;
         }
 
         if (Vin_filter > Vout_filter+2.)
         {
-          if ((Vout_filter > VoutMin) && (Vout_filter < VoutMax))
+          if ((Vout_filter > valFloat[VoutMin_ID]) && (Vout_filter < valFloat[VoutMax_ID]))
           {
             if (verboseLevel) Serial.println(F("State: Gate Driver Enabled. Circuit Ready"));
             enableBuck();
@@ -443,7 +458,9 @@ void loop()
       break;
     case RUNNING_CHARGE:
       {
-        sample();
+        whileMS(10)
+          sample();
+
         unsigned int nowInSeconds = now/(1000*TT);
         unsigned long nowInMillis = now/TT;
 
@@ -453,7 +470,7 @@ void loop()
         {
           disableBuck();
 
-          if (verboseLevel) Serial.println("STOPPED");
+          if (verboseLevel) Serial.println("State: STOPPED");
           state = STOPPED;
           digitalWrite(dumploadPin, false);
           break;
@@ -480,18 +497,18 @@ void loop()
           ok = false;
         }
 
-        if (Vout_filter < VoutMin && duty_cycle >= pwmMax)
+        if (Vout_filter < valFloat[VoutMin_ID] && duty_cycle >= pwmMax)
         {
           disableBuck();
 
           if (verboseLevel) Serial.print(F("Vout_filter < VoutMin: "));
           if (verboseLevel) Serial.print(Vout_filter);
           if (verboseLevel) Serial.print(F(" < "));
-          if (verboseLevel) Serial.println(VoutMin);
+          if (verboseLevel) Serial.println(valFloat[VoutMin_ID]);
           ok = false;
         }
         
-        if (Vin_filter > VinMax && duty_cycle >= pwmMax)
+        if (Vin_filter > valFloat[VinMax_ID] && duty_cycle >= pwmMax)
         {
           if (verboseLevel) Serial.println(F("Vin_filter > VinMax: BREAKING"));
           breakNow();
@@ -543,7 +560,7 @@ void loop()
           // Real real-time
 
           float duty_update;
-          if (Vout_filter < VoutMax)
+          if (Vout_filter < valFloat[VoutMax_ID])
           {
             if (Vout_too_high)
             {
@@ -568,10 +585,10 @@ void loop()
               Vout_too_high = true;
             }
 
-            duty_update = Vout_filter - VoutMax;
+            duty_update = Vout_filter - valFloat[VoutMax_ID];
           }
 
-          if (Vin_filter > VinMax)
+          if (Vin_filter > valFloat[VinMax_ID])
           {
             duty_update = -1;
             if (duty_cycle >= pwmMax)
@@ -590,8 +607,11 @@ void loop()
           }
 
 
-          myConstrain(duty_update, -0.1, 0.1)
-          duty_cycle -= duty_update;
+          //myConstrain(duty_update, -1, 1)
+          if (duty_update > 0)
+            duty_cycle--;
+          else
+            duty_cycle++;
 
           setBuckPWM(duty_cycle);
         }
@@ -610,7 +630,9 @@ void loop()
 
         if (com_error)
         {
-          if (verboseLevel) Serial.println(F("commutation error -> no sensor adjust"));
+          if (verboseLevel) Serial.println(F("commutation error"));
+          if (enableWindSensor)
+            windSensorFeedback2(COM_ERROR);
         }
         else if (timeOfRunInSeconds < minRunTimeInSeconds)
         {
@@ -618,7 +640,7 @@ void loop()
           if (verboseLevel) Serial.print(minRunTimeInSeconds);
           if (verboseLevel) Serial.println(F("secs -> startup failed"));
           if (enableWindSensor)
-            windSensorFeedback2(false);
+            windSensorFeedback2(FAIL);
         }
         else
         {
@@ -626,14 +648,14 @@ void loop()
           if (verboseLevel) Serial.print(minRunTimeInSeconds);
           if (verboseLevel) Serial.println(F("secs -> startup succeeded"));
           if (enableWindSensor)
-            windSensorFeedback2(true);
+            windSensorFeedback2(SUCCESS);
         }
         
         if (verboseLevel) Serial.println(F("WAITING"));
         if (enableWindSensor)
           windSpeedClear2();
         runningTime = millis();
-        state = WAITING_FOR_CANCEL;
+        state = WAITING;
       }
       break;
     

@@ -9,7 +9,11 @@ enum WorkSpcRole {CMD_IDLE=0,
                   CMD_SPINUP=6,
                   CMD_ENABLE_WIND_SENSOR=7,
                   CMD_SAMPLE=8,
-                  CMD_SIMRUN=9,
+                  CMD_DIAGNOSTICS=9,
+                  CMD_SIMRUN=11,
+                  CMD_PRINTSETTINGS=12,
+                  CMD_SET_SETTING=13,
+                  CMD_STORE_SETTINGS=14,
                   //CMD_LOAD_FACTORY_SETTINGS=11,
                   //CMD_POWERCURVE=12,
                   //CMD_SET_POWER=13,
@@ -40,10 +44,9 @@ void printHelp()
   Serial.println(F("duty <value> | set duty (0-255)"));
   Serial.println(F("dumpload <V-begin> <V-end> | use dump resistor (optional params)"));
   Serial.println(F("simrun <1/0> | simulate turbine run"));
-  Serial.println(F("loadfacsettings | factory power curve"));
-  Serial.println(F("powercurve | print power curve"));
-  Serial.println(F("setpower <id> <voltage> <current> | set single entry in powercurve"));
-  Serial.println(F("storepowercurve | store power curve"));
+  Serial.println(F("settings | print settings"));
+  Serial.println(F("setsetting <id> <val> | set setting by id,value"));
+  Serial.println(F("storesettings | store settings"));
   Serial.println(F("sensorparams <threshold> <gustminsecs> <gustmaxsecs> <gustcount> | set wind sensor parameters"));
   Serial.println(F("minruntime <sec> | set minimum ok run time"));
   Serial.println(F("commutate <cnt> | commutate motor forward"));
@@ -71,7 +74,7 @@ int getCommand()
         {
           if (hashValue != 0)
           {
-            Serial.print(F("command not recognized #"));
+            Serial.print(F("invalid #"));
             Serial.println(hashValue);
           }
           c = CMD_IDLE;
@@ -119,9 +122,25 @@ int getCommand()
           bytesExpected = -1;
           c = CMD_SAMPLE;
           break;
+        case 31168:
+          bytesExpected = -1;
+          c = CMD_DIAGNOSTICS;
+          break;
         case 58025:
           bytesExpected = -1;
           c = CMD_SIMRUN;
+          break;
+        case 23878:
+          bytesExpected = -1;
+          c = CMD_PRINTSETTINGS;
+          break;
+        case 92:
+          bytesExpected = -1;
+          c = CMD_SET_SETTING;
+          break;
+        case 39615:
+          bytesExpected = -1;
+          c = CMD_STORE_SETTINGS;
           break;
         /*case 54619:
           bytesExpected = -1;
@@ -192,7 +211,7 @@ int getCommand()
   return 0;
 }
 
-PROGMEM const float factory_powercurve[] =  {26, 17.29,
+/*PROGMEM const float factory_powercurve[] =  {26, 17.29,
                                              25, 17.21,
                                              24, 16.48,
                                              23, 14.77,
@@ -204,7 +223,7 @@ PROGMEM const float factory_powercurve[] =  {26, 17.29,
                                              17, 1.5,
                                              16, 1.11,
                                              15, 0.92,
-                                             14, 0.85};
+                                             14, 0.85};*/
 
 void eepromReadFloat16(float* pMem, int len, int address)
 {
@@ -222,14 +241,14 @@ void eepromReadFloat16(float* pMem, int len, int address)
     Serial.print(value[1]);
     Serial.print(",");
     Serial.print(*iVal);
-    Serial.print(",");*/
+    Serial.print(",");
     if (i%2 == 0)
     {
       Serial.print(pMem[i]);
       Serial.print(F(","));
     }
     else
-      Serial.println(pMem[i]);
+      Serial.println(pMem[i]);*/
   }
 }
 
@@ -246,7 +265,7 @@ void eepromUpdateFloat16(float* pMem, int len, int address=0)
     EEPROM.update(i*2 + address, value[0]);
     EEPROM.update(i*2+1 + address, value[1]);
 
-    if (i%2 == 0)
+    /*if (i%2 == 0)
     {
       Serial.print(pMem[i]);
       Serial.print(F(","));
@@ -254,12 +273,109 @@ void eepromUpdateFloat16(float* pMem, int len, int address=0)
     else
       Serial.println(pMem[i]);
     
-    /*Serial.print(iVal);
+    Serial.print(iVal);
     Serial.print(",");
     Serial.print(value[0]);
     Serial.print(",");
     Serial.println(value[1]);*/
   }
+}
+
+void sampleDump()
+{
+  Serial.print(F("V_in="));
+  Serial.print(Vin_filter);
+  Serial.print(F(" I_out="));
+  Serial.print(Iout_filter);
+  Serial.print(F(" V_out="));
+  Serial.println(Vout_filter);
+}
+
+void sampleAndDump(int dumps, int periodMS)
+{
+  unsigned long nextDump = 0;
+  for (int dumpCount=0; dumpCount<dumps;)
+  {
+    sample();
+    if (millis() > nextDump)
+    {
+      sampleDump();
+      dumpCount++;
+      nextDump = millis() + periodMS*TT;
+    }
+  }
+}
+
+void checkPhase(char* nameStr, int P_IN, int P_SD, bool use_adc=false)
+{
+  Serial.print(F("Checking phase "));
+  Serial.println(nameStr);
+  int toggle = 0;
+  analogWrite(P_IN, 15);
+  digitalWrite(P_SD, HIGH);
+  float phaseVal = 0;
+  unsigned long nextDump = millis() + 1000L*TT;
+  Serial.println(" high low float");
+  for (int dumpCount=0; dumpCount<8;)
+  {
+    if (millis() > nextDump)
+    {
+      switch (toggle)
+      {
+        case 0:
+          Serial.print(nameStr);
+          Serial.print(" 15 240   0 : value = ");
+          Serial.println(phaseVal);
+          digitalWrite(P_IN, LOW);
+          digitalWrite(P_SD, HIGH);
+          break;
+        case 1:
+          Serial.print(nameStr);
+          Serial.print("  0 255   0 : value = ");
+          Serial.println(phaseVal);
+          analogWrite(P_SD, 15);
+          digitalWrite(P_IN, LOW);
+          break;
+        case 2:
+          Serial.print(nameStr);
+          Serial.print("  0  15   0 : value = ");
+          Serial.println(phaseVal);
+          analogWrite(P_SD, 15);
+          digitalWrite(P_IN, HIGH);
+          break;
+        default:
+          Serial.print(nameStr);
+          Serial.print(" 15   0   0 : value = ");
+          Serial.println(phaseVal);
+          analogWrite(P_IN, 15);
+          digitalWrite(P_SD, HIGH);
+          toggle = -1;
+          break;
+      }
+      toggle++;
+      phaseVal = 0;
+      dumpCount++;
+      nextDump = millis() + 3000L*TT;
+    }
+
+    int val;
+    if (use_adc)
+    {
+      ADCSRA = 135;
+      ADCSRB = 0;
+      Vin_raw = (analogRead(ADC_VOLTAGE_IN)/1024.) * 5 / voltageDividerVoltsPerVolt;
+      phaseVal = 0.01*Vin_raw + 0.99*phaseVal;
+    }
+    else
+    {
+      int val = ((ACSR & 0x20) == zc_event_val);
+      phaseVal = 0.01*val + 0.99*phaseVal;
+    }
+
+  }
+
+  digitalWrite(P_IN, LOW);
+  digitalWrite(P_SD, LOW);
 }
 
 void execCommand()
@@ -317,16 +433,17 @@ void execCommand()
       float off = atof(offs);
       digitalWrite(enableDriverPin, false);
       //commutations = 0;
-      //unsigned long tmp_time = millis();
+      unsigned long stopTimeInMillis = millis()/TT + 10000;
       while (!getCommand())
       {
         sample(0.1);
-        if((Vout_filter < VoutMin) || (Vin_filter < (Vout_filter+off)))
+        if((Vout_filter < valFloat[VoutMin_ID]) || (Vin_filter < (Vout_filter+off)))
           digitalWrite(dumploadPin, false);
         else
           digitalWrite(dumploadPin, true);
 
-        if (rpm_filter < 70)
+        unsigned long nowInMillis = millis()/TT;
+        if (rpm_filter < 70 || nowInMillis > stopTimeInMillis)
           break;
       
         /*float t = (millis() - tmp_time) / (1000.*TT);
@@ -340,18 +457,65 @@ void execCommand()
         }*/
       }
       digitalWrite(dumploadPin, false);
+
+      for (int h=1; h<10; h++)
+      {
+        for (int i=0; i<30; i++)
+        {
+          digitalWrite(A_SD, HIGH);
+          digitalWrite(B_SD, HIGH);
+          digitalWrite(C_SD, HIGH);
+          waitMS(h);
+          digitalWrite(A_SD, LOW);
+          digitalWrite(B_SD, LOW);
+          digitalWrite(C_SD, LOW);
+          waitMS((10-h));
+        }
+      }
+
+
+      /*unsigned long lastNowInMillis = millis()/TT;
+      long i=0;
+      while (true)
+      {
+        unsigned long nowInMillis = millis()/TT;
+        if (nowInMillis > lastNowInMillis)
+        {
+          ++i;
+          if (i==10000)
+            break;
+          lastNowInMillis = nowInMillis;
+        }
+        digitalWrite(A_SD, HIGH);
+        digitalWrite(B_SD, HIGH);
+        digitalWrite(C_SD, HIGH);
+        for (int j=0; j<i; ++j) {;}
+        digitalWrite(A_SD, LOW);
+        digitalWrite(B_SD, LOW);
+        digitalWrite(C_SD, LOW);
+        for (int j=10000; j>i; --j) {;}
+      }*/
+
+      digitalWrite(A_SD, HIGH);
+      digitalWrite(B_SD, HIGH);
+      digitalWrite(C_SD, HIGH);
+      waitMS(2000);
+      
+      freeWheel();
+
     }
+    acknowledge = true;
     break;
     
   case CMD_SAMPLE:
     {
-      if (state==RUNNING_CHARGE)
+      if (state > WAITING)
       {
         Serial.println(F("Command forbidden in charging state!"));
         break;
       }
 
-      unsigned long nextDump = 0;
+      unsigned long nextDump = millis() + 1000*TT;
       while (!getCommand())
       {
         sample();
@@ -360,7 +524,7 @@ void execCommand()
           nextDump = millis() + 500*TT;
           Serial.print(F("V_in="));
           Serial.print(Vin_filter);
-          Serial.print(F(" I_in="));
+          Serial.print(F(" I_out="));
           Serial.print(Iout_filter);
           Serial.print(F(" V_out="));
           Serial.println(Vout_filter);
@@ -368,6 +532,62 @@ void execCommand()
       }
     }
     break;
+
+  case CMD_DIAGNOSTICS:
+    {
+      if (state > WAITING)
+      {
+        Serial.println(F("Command forbidden in charging state!"));
+        break;
+      }
+
+      freeWheel();
+
+      digitalWrite(enableDriverPin, false);
+      Serial.println(F("No mosfets conducting"));
+      sampleAndDump(9, 500);
+
+      Serial.println(F("Low mosfet conducting"));
+      analogWrite(enableDriverPin, 15);
+      digitalWrite(highPin, false);
+      sampleAndDump(9, 500);
+
+      /*Serial.println(F("High & Low mosfets conducting"));
+      digitalWrite(enableDriverPin, false);
+      analogWrite(highPin, 240);
+      digitalWrite(enableDriverPin, true);
+      sampleAndDump(9, 500);*/
+
+      Serial.println(F("High mosfet conducting"));
+      digitalWrite(enableDriverPin, false);
+      digitalWrite(highPin, true);
+      analogWrite(enableDriverPin, 240);
+      sampleAndDump(9, 500);
+      
+      digitalWrite(enableDriverPin, false);
+      Serial.println(F("No mosfets conducting"));
+      sampleAndDump(9, 500);
+    
+      BEMF_A_RISING();
+      checkPhase("A rising", A_IN, A_SD);
+      BEMF_A_FALLING();
+      checkPhase("A falling", A_IN, A_SD);
+      checkPhase("A adc", A_IN, A_SD, true);
+    
+      BEMF_B_RISING();
+      checkPhase("B rising", B_IN, B_SD);
+      BEMF_B_FALLING();
+      checkPhase("B falling", B_IN, B_SD);
+      checkPhase("B adc", B_IN, B_SD, true);
+
+      BEMF_C_RISING();
+      checkPhase("C rising", C_IN, C_SD);
+      BEMF_C_FALLING();
+      checkPhase("C falling", C_IN, C_SD);
+      checkPhase("C adc", C_IN, C_SD, true);
+    }
+    break;
+
   case CMD_ACKNOWLEDGE:
     acknowledge = true;
     break;
@@ -382,6 +602,43 @@ void execCommand()
       sscanf((char*)(commandBuffer+1), "%d", &simRun);
     }
     break;
+
+  case CMD_PRINTSETTINGS:
+    {
+      Serial.println(F("SETTINGS:"));
+      Serial.print(F("VoutMax")); Serial.println(valFloat[VoutMax_ID]);
+      Serial.print(F("VinMax")); Serial.println(valFloat[VinMax_ID]);
+      Serial.print(F("VoutMin")); Serial.println(valFloat[VoutMin_ID]);
+      Serial.print(F("IoutMax")); Serial.println(valFloat[IoutMax_ID]);
+      Serial.print(F("TipSpeedRatio")); Serial.println(valFloat[TipSpeedRatio_ID]);
+
+      if (verboseLevel_old != 0)
+        verboseLevel_old = verboseLevel;
+      verboseLevel = 0;
+    }
+    break;
+
+  case CMD_SET_SETTING:
+    {
+      char tmp1[5]="-1";
+      char tmp2[5]="-1";
+      sscanf((char*)(commandBuffer+1), "%s %s", tmp1, tmp2);
+      int id = atoi(tmp1);
+      float val = atof(tmp2);
+      if (id==-1 || val==-1)
+      {
+        Serial.println(F("wrong parameters!"));
+        break;
+      }
+      valFloat[id] = val;
+    }
+    break;
+
+  case CMD_STORE_SETTINGS:
+    eepromUpdateFloat16(valFloat, sizeof(valFloat)/4);
+    Serial.println(F("done."));
+    break;
+    
   /*case CMD_LOAD_FACTORY_SETTINGS:
     if (state==RUNNING_CHARGE)
     {
@@ -468,7 +725,7 @@ void execCommand()
     break;
   case CMD_SAMPLE_STARTUP_WIND:
     {
-      if (state==RUNNING_CHARGE)
+      if (state > WAITING)
       {
         Serial.println(F("Command forbidden in charging state!"));
         break;
@@ -504,10 +761,19 @@ void execCommand()
     break;
   case CMD_COMMUTATE:
     {
+      if (state > WAITING)
+      {
+        Serial.println(F("Command forbidden in charging state!"));
+        break;
+      }
+
       int count=0;
       sscanf((char*)(commandBuffer+1), "%d", &count);
       if (count > 0)
+      {
         makeAcknowledge(1, count);
+        shortPhases();
+      }
     }
     break;
   case CMD_HELP:
