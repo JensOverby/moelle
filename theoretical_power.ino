@@ -7,7 +7,9 @@ bool simRun = false;
 enum{INIT,WAITING,SPINUP,RUNNING_NO_CHARGE,RUNNING_CHARGE,STOPPED,BREAKING,TEST} state = INIT;
 
 unsigned long spinupTime, runningTime=0;
-unsigned int timeStampInSeconds = 0;
+unsigned int noPowerTimeStampInSeconds = 0;
+unsigned int powerRiseTimeStampInSeconds = 0;
+
 
 byte bldc_step = 0, motor_speed;
 int com_error = 0;
@@ -34,7 +36,6 @@ unsigned int minRunTimeInSeconds = 30;
 bool acknowledge = false;
 bool spinupNow = false;
 bool enableWindSensor = true;
-bool continuousModeBuck = true;
 bool buckEnabled = false;
 
 bool Vout_too_high = false;
@@ -105,16 +106,14 @@ void setup()
   eepromReadFloat16(valFloat, sizeof(valFloat)/4);
 }
 
-unsigned int enablePwm = 255;
-
 void enableBuck()
 {
-  enablePwm = 255;
   duty_cycle = min_sync_pwm + 5;
   if (duty_cycle < 180)
     duty_cycle = 180;
-  continuousModeBuck = true;
   buckEnabled = true;
+  digitalWrite(enableDriverPin, true);
+  analogWrite(highPin, duty_cycle);
 }
 
 void disableBuck()
@@ -124,79 +123,18 @@ void disableBuck()
   buckEnabled = false;
 }
 
-void setBuckPWM(unsigned int& pwm)
+/*void setBuckPWM(unsigned int& pwm)
 {
   if (!buckEnabled)
     return;
 
   if (pwm < min_sync_pwm && rpm_filter < 220)
-  {
     pwm = min_sync_pwm;
-    if (enablePwm > 235)
-      enablePwm--;
-  }
-  else if (enablePwm < 255)
-    enablePwm++;
   if (pwm > pwmMax)
     pwm = pwmMax;
 
-  //myConstrain(pwm, min_sync_pwm, pwmMax)
-
-  /*byte enablePWM = 255;
-  if (rpm_filter < 200)
-    enablePWM = 210;*/
-
-  //analogWrite(enableDriverPin, enablePWM);
   digitalWrite(enableDriverPin, true);
   analogWrite(highPin, pwm);
-
-  
-
-  /*byte enablePWM = 255;
-  if (pwm < 160)
-    enablePWM = pwm + 95;
-  
-  analogWrite(enableDriverPin, enablePWM);
-  analogWrite(highPin, pwm);*/
-}
-
-/*void setBuckPWM(float& pwm)
-{
-  if (!buckEnabled)
-    return;
-
-  if (synchronousBuck)
-  {
-    if (pwm < 160) // && pwm < (min_sync_pwm+5))
-    {
-      synchronousBuck = false;
-      digitalWrite(enableDriverPin, false);
-    }
-    else
-    {
-      myConstrain(pwm, min_sync_pwm, pwmMax)
-    }
-  }
-  else
-  {
-    if (pwm > 170) // || pwm > (min_sync_pwm+10))
-    {
-      synchronousBuck = true;
-      digitalWrite(enableDriverPin, false);
-      myConstrain(pwm, min_sync_pwm, pwmMax)
-    }
-  }
-
-  if (synchronousBuck)
-  {
-    analogWrite(highPin, pwm);
-    digitalWrite(enableDriverPin, true);
-  }
-  else
-  {
-    digitalWrite(highPin, true);
-    analogWrite(enableDriverPin, pwm);
-  }
 }*/
 
 void loop()
@@ -263,7 +201,6 @@ void loop()
           while (isRunning(runningTime))
             waitMS(20);
 
-          //makeAcknowledge(-1);
           state = INIT;
           waitMS(1000);
           break;
@@ -391,9 +328,6 @@ void loop()
           counter++;
           if (counter >= 800 || T > 5000000)
             break;
-
-          //if (com_state==2)
-          //  break;
         }        
         
         freeWheel();
@@ -444,12 +378,12 @@ void loop()
           {
             if (verboseLevel) Serial.println(F("State: Gate Driver Enabled. Circuit Ready"));
             enableBuck();
-            setBuckPWM(duty_cycle);
             whileMS(300)
               sample;
             
             state = RUNNING_CHARGE;
-            timeStampInSeconds = nowInSeconds;
+            noPowerTimeStampInSeconds = nowInSeconds;
+            powerRiseTimeStampInSeconds = nowInSeconds;
           }
         }
 
@@ -518,7 +452,7 @@ void loop()
         {
           if (Iout_filter < 0.08 /*|| Vin_filter < Vout_filter*/)
           {
-            if (nowInSeconds > timeStampInSeconds+8)
+            if (nowInSeconds > noPowerTimeStampInSeconds+8)
             {
               disableBuck();
 
@@ -534,17 +468,17 @@ void loop()
           else
           {
             shutDownFlag = false;
-            timeStampInSeconds = nowInSeconds;
+            noPowerTimeStampInSeconds = nowInSeconds;
           }
         }
         else if (Iout_filter < 0.08 /*|| Vin_filter < Vout_filter*/)
         {
-          if (nowInSeconds > timeStampInSeconds+10)
+          if (nowInSeconds > noPowerTimeStampInSeconds+10)
           {
-            timeStampInSeconds = nowInSeconds;
+            noPowerTimeStampInSeconds = nowInSeconds;
             shutDownFlag = true;
-            if (verboseLevel) Serial.print(F("shutdown timestamp at "));
-            if (verboseLevel) Serial.println(timeStampInSeconds);
+            if (verboseLevel) Serial.print(F("NoPower timestamp at "));
+            if (verboseLevel) Serial.println(noPowerTimeStampInSeconds);
           }
         }
   
@@ -574,8 +508,8 @@ void loop()
             duty_update = powerReal - powerExp;
 
 
-            if (powerReal < 10 && rpm_filter < 150 && duty_cycle > 190)
-              duty_update = 1;
+            //if (powerReal < 10 && rpm_filter < 150 && duty_cycle > 190)
+            //  duty_update = 1;
           }
           else
           {
@@ -613,7 +547,21 @@ void loop()
           else
             duty_cycle++;
 
-          setBuckPWM(duty_cycle);
+          //setBuckPWM(duty_cycle);
+
+          if (duty_cycle < min_sync_pwm)
+            duty_cycle = min_sync_pwm;
+          if (duty_cycle > pwmMax)
+            duty_cycle = pwmMax;
+
+          //if (duty_cycle < min_sync_pwm && rpm_filter < 220)
+          //  duty_cycle = min_sync_pwm;
+          //if (duty_cycle > pwmMax)
+          //  duty_cycle = pwmMax;
+          
+          digitalWrite(enableDriverPin, true);
+          analogWrite(highPin, duty_cycle);
+
         }
 
         dump();

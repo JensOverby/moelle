@@ -2,9 +2,6 @@
 unsigned long timeStamp_verbose = 0;
 unsigned long rpm_time = 0;
 
-
-//(5.5/47.)
-
 bool positive = true;
 void sample(float k)
 {
@@ -19,7 +16,9 @@ void sample(float k)
   Vout_filter = k1*Vout_filter + k*Vout_raw;
   Iout_raw = -((analogRead(ADC_CURRENT_OUT) - 508)/1024.) * 5. / acs712VoltsPerAmp;// - 0.02;
   Iout_filter = k1*Iout_filter + k*Iout_raw;
-  min_sync_pwm = 255 * Vout_filter / Vin_filter;
+  
+  min_sync_pwm = 0.95*255 * Vout_filter / Vin_filter;
+  
   myConstrain(min_sync_pwm, pwmMin, pwmMax)
 
   if ((ACSR & 0x20) == zc_event_val)
@@ -59,6 +58,8 @@ void sample(float k)
 #define POWER_FACTOR 0.7935   // = 0.5*blade_efficiency*Area, where blade_efficiency Cp=0.38197 and Area=pi*r^2
 // Radius r = 1.15 meter
 
+#define LOSSES 35
+
 // Cp=0.38197 is Hugh Piggotts value, but is 0.3 in http://www.windandwet.com/windturbine/power_calc/index.php
 // and 0.4 in http://www.ijsrp.org/research_paper_feb2012/ijsrp-feb-2012-06.pdf
       
@@ -66,7 +67,9 @@ float getExpectedPower(float rpm)
 {
   float windspeed = rpm * RPM_TO_TIP_SPEED_FACTOR / valFloat[TipSpeedRatio_ID]; // Unit is meter/sec
   //float windspeed = rpm * RPM_TO_WINDSPEED_PROPORTIONAL_FACTOR; // Unit is meter/sec
-  float power = POWER_FACTOR * pow(windspeed, 3);
+  float power = POWER_FACTOR * pow(windspeed, 3) - LOSSES;
+  if (power < 0)
+    return 0.;
   return power;
 }
 
@@ -173,10 +176,10 @@ void dump()
         case 2:
           {
             float outputWatt = Vout_filter*Iout_filter;
-            if (continuousModeBuck)
-              Serial.print(F("du"));
+            if (duty_cycle == min_sync_pwm)
+              Serial.print(F("duL"));
             else
-              Serial.print(F("duA"));
+              Serial.print(F("du"));
             Serial.print(int(duty_cycle));
             Serial.print(F(" Vi"));
             Serial.print(Vin_filter,1);
