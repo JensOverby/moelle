@@ -3,12 +3,15 @@
 //#define DEBUG
 
 bool simRun = false;
+bool controlledSTOP = true;
 
 enum{INIT,WAITING,SPINUP,RUNNING_NO_CHARGE,RUNNING_CHARGE,STOPPED,BREAKING,TEST} state = INIT;
 
 unsigned long spinupTime, runningTime=0;
 unsigned int noPowerTimeStampInSeconds = 0;
 unsigned int powerRiseTimeStampInSeconds = 0;
+
+unsigned int voltageTooHighTimeStampInSeconds = 0;
 
 
 byte bldc_step = 0, motor_speed;
@@ -38,11 +41,49 @@ bool spinupNow = false;
 bool enableWindSensor = true;
 bool buckEnabled = false;
 
-bool Vout_too_high = false;
-bool Vin_too_high = false;
+bool powerMaxReached = false;
 
 float bemfPhaseA = 0;
 
+void pwm(unsigned int val)
+{
+  analogWrite(highPin, val);
+  digitalWrite(enableDriverPin, HIGH);
+  //analogWrite(highPin, val);
+  //analogWrite(enableDriverPin, val);
+}
+
+void pwmDisable()
+{
+  analogWrite(highPin, 0);
+  digitalWrite(enableDriverPin, LOW);
+  //analogWrite(highPin, 0);
+  //analogWrite(enableDriverPin, 254);
+}
+
+void pwmHigh(unsigned int val)
+{
+  digitalWrite(highPin, HIGH);
+  analogWrite(enableDriverPin, val);
+  //analogWrite(highPin, val);
+  //analogWrite(enableDriverPin, 254);
+}
+
+void pwmLow(unsigned int val)
+{
+  digitalWrite(highPin, LOW);
+  analogWrite(enableDriverPin, val);
+  //analogWrite(highPin, 0);
+  //analogWrite(enableDriverPin, 255-val);
+}
+
+void pwmHighLow(unsigned int high, unsigned int low)
+{
+  analogWrite(highPin, high);
+  analogWrite(enableDriverPin, high+low);
+  //analogWrite(highPin, high);
+  //analogWrite(enableDriverPin, 255-low);
+}
 
 void setup()
 {
@@ -57,9 +98,7 @@ void setup()
   pinMode(dumploadPin, OUTPUT);
   digitalWrite(dumploadPin, false);
   pinMode(highPin, OUTPUT);
-  analogWrite(highPin, 0);
   pinMode(enableDriverPin, OUTPUT);
-  digitalWrite(enableDriverPin, false);
 
   // For Phase-correct PWM of 31.250 kHz (prescale factor of 1)
   TCCR0A = _BV(COM0A1) | _BV(COM0B1) | _BV(WGM00);
@@ -69,7 +108,7 @@ void setup()
   //TCCR1A =  0x21 | 0x81;
   //TCCR1B = 0x01;
   TCCR1A = (1 << COM1A1) | (1 << WGM11);
-  TCCR1A |= (1 << COM1B1);
+  TCCR1A |= (1 << COM1B1); // | (1 << COM1A0);
   TCCR1B = (1 << CS10) | (1 << WGM13) | (1 << WGM12);
   ICR1 = 255;  //This should be my frequency select: F_out = (F_clk/(2*prescaler*(1+ICR1)) = 10 kHz
   //OCR1A = 64;  //This should set D to ((1 + OCR1A)/(1 + ICR1)) * 100 = 5.1%
@@ -81,6 +120,7 @@ void setup()
 
   // Analog comparator setting
   //ACSR   = 0x10;           // Disable and clear (flag bit) analog comparator interrupt
+  pwmDisable();
 
   freeWheel();
 
@@ -102,8 +142,12 @@ void setup()
   if (verboseLevel) Serial.print(F("min_sync_pwm = "));
   if (verboseLevel) Serial.println(min_sync_pwm);
 
-  //if (verboseLevel) Serial.println(F("Power Curve:"));
   eepromReadFloat16(valFloat, sizeof(valFloat)/4);
+
+  Serial.print(F("Power at RPM_TURN_ON = "));
+  Serial.println( getExpectedPower(RPM_TURN_ON) );
+  Serial.print(F("Power at RPM_TURN_OFF = "));
+  Serial.println( getExpectedPower(RPM_TURN_OFF) );
 }
 
 void enableBuck()
@@ -112,14 +156,12 @@ void enableBuck()
   if (duty_cycle < 180)
     duty_cycle = 180;
   buckEnabled = true;
-  digitalWrite(enableDriverPin, true);
-  analogWrite(highPin, duty_cycle);
+  pwm(duty_cycle);
 }
 
 void disableBuck()
 {
-  digitalWrite(enableDriverPin, false);
-  analogWrite(highPin, 0);
+  pwmDisable();
   buckEnabled = false;
 }
 
@@ -142,23 +184,32 @@ void loop()
   /*digitalWrite(A_SD, LOW);
   digitalWrite(A_IN, LOW);
 
-  analogWrite(B_SD, 40);
-  digitalWrite(B_IN, HIGH);
+  digitalWrite(B_SD, HIGH);
+  digitalWrite(B_IN, LOW);
 
-  digitalWrite(C_SD, HIGH);
-  digitalWrite(C_IN, LOW);
+  analogWrite(C_SD, 30);
+  digitalWrite(C_IN, HIGH);*/
 
-  while (true)
-    waitMS(1000);*/
+  // Dead-time after "highPin" turns off: enableDriverPin = highPin + deadTime
+  //analogWrite(enableDriverPin, 150);
+  //analogWrite(highPin, 150);*/
+
+  //pwm(200);
+
+  //while (true)
+  //  waitMS(1000);
 
   if (getCommand())
-    execCommand();
+    while (execCommand());
 
   unsigned long now = millis();
   switch(state)
   {
     case INIT:
       {
+        if (controlledSTOP)
+          controlledStop();
+        controlledSTOP = false;
         shortPhases();
 
         bool verbose = (now - runningTime > 1000*TT);
@@ -192,6 +243,9 @@ void loop()
 
     case WAITING:
       {
+        if (controlledSTOP)
+          controlledStop();
+        controlledSTOP = false;
         shortPhases();
 
         if (acknowledge)
@@ -222,9 +276,24 @@ void loop()
       break;
     case SPINUP:
       {
+#ifdef BENCH_TEST
+        spinupTime = millis();
+        runningTime = millis();
+        if (verboseLevel) Serial.println(F("State: RUNNING, No charge"));
+        state = RUNNING_NO_CHARGE;
+        rpm_filter = 0;
+        vcc = readVcc();
+        if (verboseLevel) Serial.print(F("Vcc = "));
+        if (verboseLevel) Serial.println(vcc);
+        whileMS(300)
+          sample;
+        break;
+#endif
+        
         //int8_t debArray[300];
         int sample = 4000;
 
+        controlledSTOP = true;
         freeWheel();
         waitMS(1000);
         
@@ -352,6 +421,7 @@ void loop()
 
         if (verboseLevel) Serial.println(F("State: RUNNING, No charge"));
         state = RUNNING_NO_CHARGE;
+        rpm_filter = 0;
 
         vcc = readVcc();
         if (verboseLevel) Serial.print(F("Vcc = "));
@@ -376,14 +446,17 @@ void loop()
         {
           if ((Vout_filter > valFloat[VoutMin_ID]) && (Vout_filter < valFloat[VoutMax_ID]))
           {
-            if (verboseLevel) Serial.println(F("State: Gate Driver Enabled. Circuit Ready"));
-            enableBuck();
-            whileMS(300)
-              sample;
-            
-            state = RUNNING_CHARGE;
-            noPowerTimeStampInSeconds = nowInSeconds;
-            powerRiseTimeStampInSeconds = nowInSeconds;
+            if (rpm_filter > RPM_TURN_ON)
+            {
+              if (verboseLevel) Serial.println(F("State: Gate Driver Enabled. Circuit Ready"));
+              enableBuck();
+              whileMS(300)
+                sample;
+              
+              state = RUNNING_CHARGE;
+              noPowerTimeStampInSeconds = nowInSeconds;
+              powerRiseTimeStampInSeconds = nowInSeconds;
+            }
           }
         }
 
@@ -441,12 +514,18 @@ void loop()
           if (verboseLevel) Serial.println(valFloat[VoutMin_ID]);
           ok = false;
         }
-        
-        if (Vin_filter > valFloat[VinMax_ID] && duty_cycle >= pwmMax)
+
+        if (rpm_filter < RPM_TURN_OFF)
+        {
+          disableBuck();
+          ok = false;
+        }
+
+        /*if (Vin_filter > valFloat[VinMax_ID] && duty_cycle >= pwmMax)
         {
           if (verboseLevel) Serial.println(F("Vin_filter > VinMax: BREAKING"));
           breakNow();
-        }
+        }*/
         
         if (shutDownFlag)
         {
@@ -481,6 +560,7 @@ void loop()
             if (verboseLevel) Serial.println(noPowerTimeStampInSeconds);
           }
         }
+
   
         if (!ok)
         {
@@ -494,50 +574,47 @@ void loop()
           // Real real-time
 
           float duty_update;
-          if (Vout_filter < valFloat[VoutMax_ID])
+
+          float powerReal = Vout_filter*Iout_filter;
+#ifndef BENCH_TEST
+          if (Vout_filter > valFloat[VoutMax_ID] || Vin_filter > valFloat[VinMax_ID] || powerReal > valFloat[WattMax])
           {
-            if (Vout_too_high)
+            if (!powerMaxReached)
+            {
+              voltageTooHighTimeStampInSeconds = nowInSeconds;
+              powerMaxReached = true;
+            }
+            else
+            {
+              if (Vout_filter > valFloat[VoutMax_ID]+0.5)
+                digitalWrite(dumploadPin, true);
+
+              if (nowInSeconds > voltageTooHighTimeStampInSeconds+1)
+              {
+                if (duty_cycle >= pwmMax)
+                {
+                  digitalWrite(dumploadPin, true);
+                }
+              }
+            }
+            duty_update = -1;
+          }
+          else
+#endif
+          {
+            if (powerMaxReached)
             {
               digitalWrite(dumploadPin, false);
-              Vout_too_high = false;
+              powerMaxReached = false;
             }
 
             float powerExp = getExpectedPower(rpm_filter);
-            float powerReal = Vout_filter * Iout_filter;
 
             duty_update = powerReal - powerExp;
 
 
             //if (powerReal < 10 && rpm_filter < 150 && duty_cycle > 190)
             //  duty_update = 1;
-          }
-          else
-          {
-            if (Vin_filter > 20)
-            {
-              digitalWrite(dumploadPin, true);
-              Vout_too_high = true;
-            }
-
-            duty_update = Vout_filter - valFloat[VoutMax_ID];
-          }
-
-          if (Vin_filter > valFloat[VinMax_ID])
-          {
-            duty_update = -1;
-            if (duty_cycle >= pwmMax)
-            {
-              digitalWrite(dumploadPin, true);
-              Vin_too_high = true;
-            }
-          }
-          else 
-          {
-            if (Vin_too_high)
-            {
-              digitalWrite(dumploadPin, false);
-              Vin_too_high = false;
-            }
           }
 
 
@@ -558,10 +635,8 @@ void loop()
           //  duty_cycle = min_sync_pwm;
           //if (duty_cycle > pwmMax)
           //  duty_cycle = pwmMax;
-          
-          digitalWrite(enableDriverPin, true);
-          analogWrite(highPin, duty_cycle);
 
+          pwm(duty_cycle);
         }
 
         dump();

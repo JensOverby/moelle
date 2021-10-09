@@ -306,7 +306,7 @@ void sampleAndDump(int dumps, int periodMS)
   }
 }
 
-void checkPhase(char* nameStr, int P_IN, int P_SD, bool use_adc=false)
+/*void checkPhase(char* nameStr, int P_IN, int P_SD, bool use_adc=false)
 {
   Serial.print(F("Checking phase "));
   Serial.println(nameStr);
@@ -376,9 +376,52 @@ void checkPhase(char* nameStr, int P_IN, int P_SD, bool use_adc=false)
 
   digitalWrite(P_IN, LOW);
   digitalWrite(P_SD, LOW);
+}*/
+
+void checkPhase(char* nameStr, int P_IN, int P_SD)
+{
+  freeWheel();
+
+  Serial.print(F("Checking phase "));
+  Serial.println(nameStr);
+  Serial.println(F("================"));
+  
+  Serial.println(F("Buck converter low mosfet ON"));
+  pwmLow(15);
+  sampleAndDump(9, 500);
+
+  Serial.println(F("Buck converter high mosfet ON"));
+  pwmHigh(15);
+  sampleAndDump(9, 500);
+  
+  Serial.println(F("Both"));
+  analogWrite(P_IN, 15);
+  digitalWrite(P_SD, HIGH);
+  sampleAndDump(9, 500);
+
+  Serial.println(F("High"));
+  digitalWrite(P_IN, HIGH);
+  analogWrite(P_SD, 15);
+  sampleAndDump(9, 500);
+
+  Serial.println(F("Low"));
+  digitalWrite(P_IN, LOW);
+  analogWrite(P_SD, 15);
+  sampleAndDump(9, 500);
+
+  Serial.println(F("None"));
+  digitalWrite(P_IN, LOW);
+  digitalWrite(P_SD, LOW);
+  sampleAndDump(9, 500);
+
+  freeWheel();
+
+  Serial.println(F("No buck converter mosfets ON"));
+  digitalWrite(enableDriverPin, false);
+  sampleAndDump(9, 500);
 }
 
-void execCommand()
+bool execCommand()
 {
   switch (commandBuffer[0])
   {
@@ -390,32 +433,55 @@ void execCommand()
     break;
   case CMD_DUTY:
     {
-      digitalWrite(enableDriverPin, true);
-      duty_cycle = pwmMin;
+      freeWheel();
+      
+      int pwmVal = -1;
+      sscanf((char*)(commandBuffer+1), "%d", &pwmVal);
+
+      if (pwmVal == -1)
+        break;
+      
+      Serial.print(F("pwm duty = "));
+      Serial.println(pwmVal);
+
+      for (int i=0; i<100; ++i)
+        sample();
+
+      duty_cycle = pwmVal;
+      pwm(duty_cycle);
+
       int counter = 0;
-      int duty;
-      sscanf((char*)(commandBuffer+1), "%d", &duty);
       while (!getCommand())
       {
-        if (duty>duty_cycle)
-          duty_cycle++;
-        else if (duty<duty_cycle)
-          duty_cycle--;
-
-        analogWrite(highPin, duty_cycle);
         sample();
+
+        int minimum_pwm = 255. * Vout_filter / Vin_filter;
+        if (minimum_pwm < pwmMin)
+          minimum_pwm = pwmMin;
+        if (minimum_pwm > pwmMax || pwmVal < minimum_pwm)
+        {
+          pwmDisable();
+          Serial.println(F("aborting, input voltage too low"));
+          commandBuffer[0] = CMD_IDLE;
+          return false;
+        }
 
         counter++;
         if (counter>100)
         {
           counter=0;
-          dump();
+          if (dump())
+          {
+            Serial.print(F("minpwm="));
+            Serial.println(minimum_pwm);
+          }
         }
         waitMS(1);
       }
-      digitalWrite(enableDriverPin, false);
+      pwmDisable();
+      //digitalWrite(enableDriverPin, false);
     }
-    break;
+    return true;
   case CMD_DUMPLOAD:
     {
       int voltageBegin = -1, voltageEnd = -1;
@@ -458,20 +524,7 @@ void execCommand()
       }
       digitalWrite(dumploadPin, false);
 
-      for (int h=1; h<10; h++)
-      {
-        for (int i=0; i<30; i++)
-        {
-          digitalWrite(A_SD, HIGH);
-          digitalWrite(B_SD, HIGH);
-          digitalWrite(C_SD, HIGH);
-          waitMS(h);
-          digitalWrite(A_SD, LOW);
-          digitalWrite(B_SD, LOW);
-          digitalWrite(C_SD, LOW);
-          waitMS((10-h));
-        }
-      }
+      controlledStop();
 
 
       /*unsigned long lastNowInMillis = millis()/TT;
@@ -515,6 +568,8 @@ void execCommand()
         break;
       }
 
+      freeWheel();
+
       unsigned long nextDump = millis() + 1000*TT;
       while (!getCommand())
       {
@@ -527,7 +582,9 @@ void execCommand()
           Serial.print(F(" I_out="));
           Serial.print(Iout_filter);
           Serial.print(F(" V_out="));
-          Serial.println(Vout_filter);
+          Serial.print(Vout_filter);
+          Serial.print(F(" rpm="));
+          Serial.println(rpm_filter);
         }
       }
     }
@@ -541,50 +598,84 @@ void execCommand()
         break;
       }
 
+      int mode=0;
+      sscanf((char*)(commandBuffer+1), "%d", &mode);
+
       freeWheel();
 
-      digitalWrite(enableDriverPin, false);
-      Serial.println(F("No mosfets conducting"));
-      sampleAndDump(9, 500);
-
-      Serial.println(F("Low mosfet conducting"));
-      analogWrite(enableDriverPin, 15);
-      digitalWrite(highPin, false);
-      sampleAndDump(9, 500);
-
-      /*Serial.println(F("High & Low mosfets conducting"));
-      digitalWrite(enableDriverPin, false);
-      analogWrite(highPin, 240);
-      digitalWrite(enableDriverPin, true);
-      sampleAndDump(9, 500);*/
-
-      Serial.println(F("High mosfet conducting"));
-      digitalWrite(enableDriverPin, false);
-      digitalWrite(highPin, true);
-      analogWrite(enableDriverPin, 240);
-      sampleAndDump(9, 500);
+      while (!getCommand())
+      {
+        switch (mode)
+        {
+          case 0:
+            digitalWrite(enableDriverPin, false);
+            Serial.println(F("No mosfets conducting"));
+            sampleAndDump(9, 500);
       
-      digitalWrite(enableDriverPin, false);
-      Serial.println(F("No mosfets conducting"));
-      sampleAndDump(9, 500);
-    
-      BEMF_A_RISING();
-      checkPhase("A rising", A_IN, A_SD);
-      BEMF_A_FALLING();
-      checkPhase("A falling", A_IN, A_SD);
-      checkPhase("A adc", A_IN, A_SD, true);
-    
-      BEMF_B_RISING();
-      checkPhase("B rising", B_IN, B_SD);
-      BEMF_B_FALLING();
-      checkPhase("B falling", B_IN, B_SD);
-      checkPhase("B adc", B_IN, B_SD, true);
+            /*Serial.println(F("High & Low mosfets conducting"));
+            digitalWrite(enableDriverPin, false);
+            analogWrite(highPin, 240);
+            digitalWrite(enableDriverPin, true);
+            sampleAndDump(9, 500);*/
+      
+            Serial.println(F("High mosfet conducting"));
+            pwmHigh(240);
+            sampleAndDump(9, 500);
 
-      BEMF_C_RISING();
-      checkPhase("C rising", C_IN, C_SD);
-      BEMF_C_FALLING();
-      checkPhase("C falling", C_IN, C_SD);
-      checkPhase("C adc", C_IN, C_SD, true);
+            pwmDisable();
+            Serial.println(F("No mosfets conducting"));
+            sampleAndDump(9, 500);
+      
+            Serial.println(F("Low mosfet conducting"));
+            pwmLow(15);
+            sampleAndDump(9, 500);
+
+            pwmDisable();
+            Serial.println(F("No mosfets conducting"));
+            sampleAndDump(9, 500);
+            break;
+  
+          case 1:
+            checkPhase("A", A_IN, A_SD);
+            checkPhase("B", B_IN, B_SD);
+            checkPhase("C", C_IN, C_SD);
+          break;
+  
+          case 2:
+            freeWheel();
+            Serial.println(F("Buck converter low mosfet ON"));
+            pwmLow(15);
+            sampleAndDump(9, 500);
+          
+            /*Serial.println(F("Buck converter high mosfet ON"));
+            digitalWrite(enableDriverPin, false);
+            digitalWrite(highPin, true);
+            analogWrite(enableDriverPin, 15);
+            sampleAndDump(9, 500);*/
+  
+            Serial.println(F("A_low & B_low"));
+            digitalWrite(A_SD, HIGH);
+            digitalWrite(B_SD, HIGH);
+            sampleAndDump(9, 500);
+      
+            freeWheel();
+            Serial.println(F("A_low & C_low"));
+            digitalWrite(A_SD, HIGH);
+            digitalWrite(C_SD, HIGH);
+            sampleAndDump(9, 500);
+      
+            freeWheel();
+            Serial.println(F("B_low & C_low"));
+            digitalWrite(B_SD, HIGH);
+            digitalWrite(C_SD, HIGH);
+            sampleAndDump(9, 500);
+  
+            Serial.println(F("Buck converter no mosfets ON"));
+            pwmDisable();
+            sampleAndDump(9, 500);
+            break;
+        }
+      }
     }
     break;
 
@@ -611,6 +702,8 @@ void execCommand()
       Serial.print(F("VoutMin")); Serial.println(valFloat[VoutMin_ID]);
       Serial.print(F("IoutMax")); Serial.println(valFloat[IoutMax_ID]);
       Serial.print(F("TipSpeedRatio")); Serial.println(valFloat[TipSpeedRatio_ID]);
+      Serial.print(F("Losses")); Serial.println(valFloat[Losses_ID]);
+      Serial.print(F("WattMax")); Serial.println(valFloat[WattMax]);
 
       if (verboseLevel_old != 0)
         verboseLevel_old = verboseLevel;
@@ -753,7 +846,7 @@ void execCommand()
         {
           pressureThreshold = pThres_old;
           commandBuffer[0] = CMD_IDLE;
-          return;
+          return true;
         }
       }
       pressureThreshold -= 0.02;
@@ -771,7 +864,7 @@ void execCommand()
       sscanf((char*)(commandBuffer+1), "%d", &count);
       if (count > 0)
       {
-        makeAcknowledge(1, count);
+        makeAcknowledge(1, count, 2000);
         shortPhases();
       }
     }
@@ -786,4 +879,5 @@ void execCommand()
   }
 
   commandBuffer[0] = CMD_IDLE;
+  return false;
 }

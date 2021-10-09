@@ -178,8 +178,28 @@ void freeWheel()
   digitalWrite(C_IN, LOW);
 }
 
+void controlledStop()
+{
+/*  for (int h=1; h<10; h++)
+  {
+    for (int i=0; i<100; i++)
+    {
+      digitalWrite(A_SD, HIGH);
+      digitalWrite(B_SD, HIGH);
+      digitalWrite(C_SD, HIGH);
+      waitMS(h);
+      digitalWrite(A_SD, LOW);
+      digitalWrite(B_SD, LOW);
+      digitalWrite(C_SD, LOW);
+      waitMS((10-h));
+    }
+  }*/
+}
+
 void shortPhases()
 {
+  freeWheel();
+/*  
   digitalWrite(A_SD, HIGH);
   digitalWrite(A_IN, LOW);
 
@@ -187,21 +207,31 @@ void shortPhases()
   digitalWrite(B_IN, LOW);
   
   digitalWrite(C_SD, HIGH);
-  digitalWrite(C_IN, LOW);
+  digitalWrite(C_IN, LOW);*/
 }
 
-void makeAcknowledge(int directio, int commutations)
+void makeAcknowledge(int directio, int commutations, int delayTime)
 {
+#ifdef BENCH_TEST
+  Serial.println(F("BENCH TEST"));
+  return;
+#endif
   waitMS(300);
   
   for (int j = directio==1? 0 : commutations-1; j>-1 && j<commutations; j += directio)
   {
     bldc_step = j % 6;
-    for (motor_speed=10; motor_speed<40; motor_speed++)
+    if (delayTime != 1)
+    {
+      Serial.print(F("Step = "));
+      Serial.println(bldc_step);
+    }
+    for (motor_speed=10; motor_speed<70; motor_speed++)
     {
       bldc_move();
       waitMS(10);
     }
+    waitMS(delayTime);
   }
   bldc_step = (bldc_step+directio) % 6;
 
