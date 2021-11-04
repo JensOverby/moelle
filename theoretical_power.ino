@@ -1,6 +1,7 @@
 #include "header.h"
 
 //#define DEBUG
+#define INIT_DUTY_CYCLE 255 * Vout_filter / (Vout_filter+START_CHARGING_VOLTAGE_DIFF)
 
 bool simRun = false;
 bool controlledSTOP = true;
@@ -20,6 +21,9 @@ int com_error = 0;
 float vcc = 5.;
 bool shutDownFlag = false;
 float Vin_filter=0, Vout_filter=0, Iout_filter=0, rpm_filter=0;
+
+float fanAverageWatt = 0;
+
 #ifdef DEBUG
 float Vout_filter_dbg=0;
 #endif
@@ -97,6 +101,7 @@ void setup()
 
   pinMode(dumploadPin, OUTPUT);
   digitalWrite(dumploadPin, false);
+  pinMode(fanPin, INPUT); // Turns fan off
   pinMode(highPin, OUTPUT);
   pinMode(enableDriverPin, OUTPUT);
 
@@ -152,7 +157,10 @@ void setup()
 
 void enableBuck()
 {
-  duty_cycle = min_sync_pwm + 5;
+  whileMS(300)
+    sample;
+  duty_cycle = INIT_DUTY_CYCLE;
+  //duty_cycle = min_sync_pwm + 5;
   if (duty_cycle < 180)
     duty_cycle = 180;
   buckEnabled = true;
@@ -181,23 +189,39 @@ void disableBuck()
 
 void loop()
 {
-  /*digitalWrite(A_SD, LOW);
-  digitalWrite(A_IN, LOW);
+  /*analogWrite(A_SD, 30);
+  digitalWrite(A_IN, HIGH);
 
   digitalWrite(B_SD, HIGH);
   digitalWrite(B_IN, LOW);
 
-  analogWrite(C_SD, 30);
-  digitalWrite(C_IN, HIGH);*/
+  digitalWrite(C_SD, LOW);
+  digitalWrite(C_IN, LOW);
 
   // Dead-time after "highPin" turns off: enableDriverPin = highPin + deadTime
   //analogWrite(enableDriverPin, 150);
-  //analogWrite(highPin, 150);*/
+  //analogWrite(highPin, 150);
 
   //pwm(200);
+*/
 
-  //while (true)
-  //  waitMS(1000);
+  /*bool fanOff = true;
+
+  while (true) {
+    //Iout_raw = analogRead(ADC_CURRENT_OUT);
+    //Serial.println(Iout_raw);
+    if (fanOff)
+      pinMode(fanPin, INPUT);
+    else
+    {
+      pinMode(fanPin, OUTPUT);
+      digitalWrite(fanPin, false);
+    }
+
+    //digitalWrite(fanPin, fanOff);
+    fanOff = !fanOff;
+    waitMS(5000);
+  }*/
 
   if (getCommand())
     while (execCommand());
@@ -431,6 +455,8 @@ void loop()
 
     case RUNNING_NO_CHARGE:
       {
+        pinMode(fanPin, INPUT);
+
         //vcc = readVcc();
         unsigned int nowInSeconds = now/(1000*TT);
         sample();
@@ -442,7 +468,7 @@ void loop()
           break;
         }
 
-        if (Vin_filter > Vout_filter+2.)
+        if (Vin_filter > Vout_filter + START_CHARGING_VOLTAGE_DIFF)
         {
           if ((Vout_filter > valFloat[VoutMin_ID]) && (Vout_filter < valFloat[VoutMax_ID]))
           {
@@ -450,10 +476,9 @@ void loop()
             {
               if (verboseLevel) Serial.println(F("State: Gate Driver Enabled. Circuit Ready"));
               enableBuck();
-              whileMS(300)
-                sample;
               
               state = RUNNING_CHARGE;
+              fanAverageWatt = 0;
               noPowerTimeStampInSeconds = nowInSeconds;
               powerRiseTimeStampInSeconds = nowInSeconds;
             }
@@ -619,10 +644,23 @@ void loop()
 
 
           //myConstrain(duty_update, -1, 1)
-          if (duty_update > 0)
+          if (powerReal < 3.5)
+          {
+            unsigned int init_duty = INIT_DUTY_CYCLE;
+            if (duty_cycle < init_duty)
+              duty_cycle++;
+            else if (duty_update > 0)
+              duty_cycle--;
+            else
+              duty_cycle++;
+          }
+          else if (duty_update > 0)
             duty_cycle--;
           else
             duty_cycle++;
+
+
+
 
           //setBuckPWM(duty_cycle);
 
@@ -639,13 +677,29 @@ void loop()
           pwm(duty_cycle);
         }
 
-        dump();
-        //dump(nowInSeconds);
+        if (dump())
+        {
+          fanAverageWatt += (0.95*fanAverageWatt + 0.05*Vout_filter*Iout_filter);
+          if (fanAverageWatt > 50)
+          {
+            pinMode(fanPin, OUTPUT);
+            digitalWrite(fanPin, false);
+          }
+          else
+          {
+            pinMode(fanPin, INPUT);
+          }
+        }
+
+      
+      
       }
       break;
 
     case STOPPED:
       {
+        pinMode(fanPin, INPUT);
+
         unsigned int timeOfRunInSeconds = (runningTime - spinupTime)/(1000*TT);
         if (verboseLevel) Serial.print(F("Turbine running time: "));
         if (verboseLevel) Serial.print(timeOfRunInSeconds);

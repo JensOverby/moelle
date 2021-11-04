@@ -20,6 +20,7 @@
 
 #define highPin 10
 #define dumploadPin 2
+#define fanPin 13
 #define enableDriverPin 9
 #define efficiency 0.9
 #define pwmMin 30
@@ -35,6 +36,7 @@
 
 #define RPM_TURN_ON 150
 #define RPM_TURN_OFF 147
+#define START_CHARGING_VOLTAGE_DIFF 2.
 
 //#define BENCH_TEST
 

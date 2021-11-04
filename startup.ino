@@ -226,7 +226,7 @@ void makeAcknowledge(int directio, int commutations, int delayTime)
       Serial.print(F("Step = "));
       Serial.println(bldc_step);
     }
-    for (motor_speed=10; motor_speed<70; motor_speed++)
+    for (motor_speed=10; motor_speed<50; motor_speed++)
     {
       bldc_move();
       waitMS(10);

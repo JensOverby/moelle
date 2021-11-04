@@ -14,7 +14,8 @@ void sample(float k)
   Vout_raw = 12.3;
 #endif
   Vout_filter = k1*Vout_filter + k*Vout_raw;
-  Iout_raw = ((analogRead(ADC_CURRENT_OUT) - 509)/1024.) * 5. / acs712VoltsPerAmp;// - 0.02;
+  //Iout_raw = ((analogRead(ADC_CURRENT_OUT) - 509)/1024.) * 5. / acs712VoltsPerAmp;// - 0.02;
+  Iout_raw = (analogRead(ADC_CURRENT_OUT) - 53) / 9.5;
   Iout_filter = k1*Iout_filter + k*Iout_raw;
   
   min_sync_pwm = 0.95*255 * Vout_filter / Vin_filter;
@@ -207,9 +208,9 @@ bool dump()
       }
       //commutations = 0;
       timeStamp_verbose = millis();
-      return true;
       //Serial.println(timeStamp_verbose);
     }
+    return true;
   }
   return false;
 }
